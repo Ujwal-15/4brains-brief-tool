@@ -1,0 +1,79 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
+let initialized = false;
+let cachedMermaid: typeof import("mermaid").default | null = null;
+
+async function getMermaid() {
+  if (cachedMermaid) return cachedMermaid;
+  const mod = await import("mermaid");
+  cachedMermaid = mod.default;
+  if (!initialized) {
+    cachedMermaid.initialize({
+      startOnLoad: false,
+      theme: "neutral",
+      securityLevel: "strict",
+      flowchart: { htmlLabels: false, curve: "basis" },
+    });
+    initialized = true;
+  }
+  return cachedMermaid;
+}
+
+export function MermaidPreview({ source }: { source: string }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const renderId = useRef(`m${Math.random().toString(36).slice(2, 8)}`);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!source.trim()) {
+      if (ref.current) ref.current.innerHTML = "";
+      setError(null);
+      return;
+    }
+
+    (async () => {
+      try {
+        const mermaid = await getMermaid();
+        // mermaid.render needs a unique id each call to avoid duplicate-id collisions
+        const id = `${renderId.current}-${Date.now()}`;
+        const { svg } = await mermaid.render(id, source);
+        if (!cancelled && ref.current) {
+          ref.current.innerHTML = svg;
+          setError(null);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(
+            e instanceof Error ? e.message : "Failed to render flowchart",
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [source]);
+
+  if (!source.trim()) {
+    return (
+      <div className="rounded border border-dashed border-neutral-300 px-4 py-8 text-center text-xs text-neutral-500">
+        Type steps above to preview the flowchart.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded border border-neutral-200 bg-neutral-50 p-4">
+      {error ? (
+        <p className="text-xs text-red-600">Flowchart error: {error}</p>
+      ) : (
+        <div ref={ref} className="flex justify-center [&_svg]:max-w-full" />
+      )}
+    </div>
+  );
+}

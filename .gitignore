@@ -26,7 +26,15 @@ yarn-debug.log*
 yarn-error.log*
 
 # local env files
+.env
 .env*.local
+
+# prisma sqlite
+/prisma/*.db
+/prisma/*.db-journal
+
+# generated brief exports (dev only — prod must use object storage)
+/public/exports/
 
 # vercel
 .vercel
@@ -34,3 +42,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/src/generated/prisma
