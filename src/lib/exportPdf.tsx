@@ -568,6 +568,9 @@ export function BriefPdfDocument({
                             <Text style={styles.flowchartLabel}>
                               User Journey Flowchart
                             </Text>
+                            {/* @react-pdf/renderer Image has no alt prop;
+                                jsx-a11y/alt-text doesn't know that. */}
+                            {/* eslint-disable-next-line jsx-a11y/alt-text */}
                             <Image
                               src={activityFlowcharts[a.index]}
                               style={styles.flowchartImage}

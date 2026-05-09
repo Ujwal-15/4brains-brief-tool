@@ -288,7 +288,11 @@ export function isSection5Complete(v: BriefFormData): boolean {
   return true;
 }
 
-// Section 6 — Additional Notes (optional, always considered complete)
+// Section 6 — Additional Notes (optional, always considered complete).
+// Signature matches the other isSectionNComplete functions so it can be
+// stored in the same typed map in BriefForm; the parameter is unused on
+// purpose because notes are never required.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function isSection6Complete(_v: BriefFormData): boolean {
   return true;
 }

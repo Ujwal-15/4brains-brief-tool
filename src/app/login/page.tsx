@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -15,7 +15,27 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
+// Wrapping the form in <Suspense> is required by Next.js when a client
+// component reads useSearchParams() — without it the static-prerender
+// step at build time bails because params can only be resolved at request
+// time. The fallback is the same shell rendered server-side.
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginShell />}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginShell() {
+  return (
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <BackgroundBlobs />
+    </div>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const next = searchParams.get("next") || "/";
