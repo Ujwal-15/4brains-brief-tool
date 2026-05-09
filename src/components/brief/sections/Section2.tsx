@@ -1,26 +1,116 @@
 "use client";
 
+import { useState } from "react";
 import { Controller, useFormContext, useWatch } from "react-hook-form";
 import type { BriefFormData } from "@/lib/briefSchema";
 import { INDOOR_OUTDOOR_OPTIONS } from "@/lib/briefSchema";
-import { Field, inputClass, textareaClass, Toggle } from "../Field";
+import { Field, inputClass, textareaClass } from "../Field";
+
+// Date field with optional range. Defaults to a single date input;
+// a small "+ Add end date" toggle expands it into a From/To pair so we
+// don't force CS through a two-field UI for the common single-day case.
+function DateField({
+  label,
+  required,
+  fromName,
+  toName,
+  hint,
+}: {
+  label: string;
+  required?: boolean;
+  fromName: keyof BriefFormData;
+  toName: keyof BriefFormData;
+  hint?: string;
+}) {
+  const { register, setValue } = useFormContext<BriefFormData>();
+  const toValue = useWatch({ name: toName }) as string | undefined;
+  const [showRange, setShowRange] = useState<boolean>(Boolean(toValue));
+
+  function expand() {
+    setShowRange(true);
+  }
+  function collapse() {
+    setValue(toName as never, "" as never, { shouldDirty: true });
+    setShowRange(false);
+  }
+
+  return (
+    <div data-field={fromName}>
+      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-soft/80">
+          {label}
+          {required && <span className="ml-1 text-primary">*</span>}
+        </span>
+        {showRange ? (
+          <button
+            type="button"
+            onClick={collapse}
+            className="text-[11px] font-medium text-ink-soft/70 transition-colors hover:text-ink"
+          >
+            ← Single date
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={expand}
+            className="text-[11px] font-medium text-primary hover:underline"
+          >
+            + Add end date
+          </button>
+        )}
+      </div>
+      {showRange ? (
+        <div className="grid grid-cols-2 gap-3">
+          <input
+            type="date"
+            aria-label={`${label} from`}
+            className={inputClass}
+            {...register(fromName)}
+          />
+          <input
+            type="date"
+            aria-label={`${label} to`}
+            className={inputClass}
+            {...register(toName)}
+          />
+        </div>
+      ) : (
+        <input
+          type="date"
+          aria-label={label}
+          className={inputClass}
+          {...register(fromName)}
+        />
+      )}
+      {hint && (
+        <p className="mt-1.5 text-[12px] text-ink-soft/70">{hint}</p>
+      )}
+    </div>
+  );
+}
 
 export function Section2() {
   const { register, control } = useFormContext<BriefFormData>();
-  const demoRequired = useWatch({ control, name: "demoRequired" });
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <Field label="Event Date(s)" required name="eventDates" hint="A date or range">
-        <input className={inputClass} {...register("eventDates")} />
-      </Field>
+    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+      <DateField
+        label="Event Date"
+        required
+        fromName="eventDateFrom"
+        toName="eventDateTo"
+        hint="Multi-day event? Click + Add end date."
+      />
+
       <Field label="City / Cities" required name="cities">
         <input className={inputClass} {...register("cities")} />
       </Field>
 
-      <Field label="Venue Name & Full Address" required name="venueAddress">
-        <textarea className={textareaClass} {...register("venueAddress")} />
-      </Field>
+      <div className="sm:col-span-2">
+        <Field label="Venue Name & Full Address" required name="venueAddress">
+          <textarea className={textareaClass} {...register("venueAddress")} />
+        </Field>
+      </div>
 
       <Field label="Indoor / Outdoor / Both" required name="indoorOutdoor">
         <Controller
@@ -39,73 +129,22 @@ export function Section2() {
         />
       </Field>
 
-      <Field
-        label="Event Start & End Time per slot"
+      <div className="hidden sm:block" />
+
+      <DateField
+        label="Setup Date"
         required
-        name="eventTimes"
-        hint="One slot per line — e.g. ‘Day 1: 10:00 – 18:00’"
-      >
-        <textarea className={textareaClass} {...register("eventTimes")} />
-      </Field>
+        fromName="setupDateFrom"
+        toName="setupDateTo"
+        hint="Spans multiple days? Click + Add end date."
+      />
 
-      <Field label="Setup Date & Time" required name="setupDateTime">
-        <input
-          type="datetime-local"
-          className={inputClass}
-          {...register("setupDateTime")}
-        />
-      </Field>
-      <Field label="Setup Duration Available" required name="setupDuration">
-        <input
-          className={inputClass}
-          placeholder="e.g. 6 hours"
-          {...register("setupDuration")}
-        />
-      </Field>
-
-      <Field label="Dismantle Date & Time" required name="dismantleDateTime">
-        <input
-          type="datetime-local"
-          className={inputClass}
-          {...register("dismantleDateTime")}
-        />
-      </Field>
-
-      <div className="sm:col-span-2">
-        <div className="mb-1 text-xs font-medium text-neutral-700">
-          Demo Required
-        </div>
-        <Controller
-          control={control}
-          name="demoRequired"
-          render={({ field }) => (
-            <Toggle
-              value={field.value}
-              onChange={field.onChange}
-              label={field.value ? "Yes" : "No"}
-            />
-          )}
-        />
-      </div>
-
-      {demoRequired && (
-        <Field label="Demo Date & Time" required name="demoDateTime">
-          <input
-            type="datetime-local"
-            className={inputClass}
-            {...register("demoDateTime")}
-          />
-        </Field>
-      )}
-
-      <div className="sm:col-span-2">
-        <Field label="Venue Access Notes">
-          <textarea
-            className={textareaClass}
-            {...register("venueAccessNotes")}
-          />
-        </Field>
-      </div>
+      <DateField
+        label="Demo Date"
+        fromName="demoDateFrom"
+        toName="demoDateTo"
+        hint="Optional — if there’s a demo for the client before the event."
+      />
     </div>
   );
 }

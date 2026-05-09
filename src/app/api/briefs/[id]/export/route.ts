@@ -1,17 +1,13 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import JSZip from "jszip";
 import { renderToBuffer } from "@react-pdf/renderer";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getMissingRequiredFields } from "@/lib/briefSchema";
 import { parseBriefData, writeChangeLog } from "@/lib/briefData";
 import { renderSectionsForExport } from "@/lib/exportSections";
 import { BriefPdfDocument } from "@/lib/exportPdf";
+import { uploadPdf } from "@/lib/storage";
 
-// Force Node runtime — @react-pdf/renderer and node:fs aren't Edge-compatible.
+// Force Node runtime — @react-pdf/renderer isn't Edge-compatible.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -32,32 +28,38 @@ export async function POST(
   req: Request,
   { params }: { params: { id: string } },
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const supabase = createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const brief = await prisma.brief.findUnique({
-    where: { id: params.id },
-    include: {
-      pm: { select: { id: true, name: true, email: true } },
-      createdBy: { select: { id: true, name: true, email: true } },
-    },
-  });
+  const { data: brief } = await supabase
+    .from("briefs")
+    .select(
+      "id, status, data, created_by_id, pm_id, exported_pdf_url, exported_flowchart_url",
+    )
+    .eq("id", params.id)
+    .maybeSingle();
   if (!brief) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const isOwner =
-    brief.createdById === session.user.id ||
-    brief.pmId === session.user.id;
-  if (!isOwner && session.user.role !== "ADMIN") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const profileIds = [brief.created_by_id, brief.pm_id].filter(
+    (v): v is string => typeof v === "string" && v.length > 0,
+  );
+  const { data: profiles } = await supabase
+    .from("profiles")
+    .select("id, name")
+    .in("id", profileIds);
+  const nameById = new Map(
+    (profiles ?? []).map((p) => [p.id as string, p.name as string]),
+  );
 
   const data = parseBriefData(brief.data);
 
-  // Validate before export — same rules as Send to PM.
   const missing = getMissingRequiredFields(data);
   if (missing.length > 0) {
     return NextResponse.json(
@@ -67,25 +69,35 @@ export async function POST(
           section: m.section,
           name: m.name,
           label: m.label,
+          activityIndex: m.activityIndex,
         })),
       },
       { status: 400 },
     );
   }
 
-  // Optional flowchart PNG attached as multipart form field "flowchart".
-  let flowchartPng: Buffer | undefined;
+  // Multi-activity flowchart upload: form fields named "flowchart_<idx>"
+  // where <idx> is 1-based.
+  const activityFlowcharts: Record<number, Buffer> = {};
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.startsWith("multipart/form-data")) {
     const form = await req.formData();
-    const file = form.get("flowchart");
-    if (file && file instanceof Blob && file.size > 0) {
-      flowchartPng = Buffer.from(await file.arrayBuffer());
+    const entries = Array.from(form.entries());
+    for (const [key, value] of entries) {
+      const m = key.match(/^flowchart_(\d+)$/);
+      if (!m) continue;
+      const idx = Number(m[1]);
+      if (value instanceof Blob && value.size > 0) {
+        activityFlowcharts[idx] = Buffer.from(await value.arrayBuffer());
+      }
     }
   }
 
-  const csName = brief.createdBy?.name || session.user.name || "—";
-  const pmName = brief.pm?.name || "—";
+  const csName =
+    nameById.get(brief.created_by_id as string) || user.email || "—";
+  const pmName = brief.pm_id
+    ? (nameById.get(brief.pm_id as string) ?? "—")
+    : "—";
   const projectName = data.projectName || "Untitled brief";
   const generatedDate = new Date().toLocaleDateString("en-US", {
     year: "numeric",
@@ -93,72 +105,90 @@ export async function POST(
     day: "numeric",
   });
 
-  // Render PDF
   const sections = renderSectionsForExport(data, { csName, pmName });
   const pdfBuffer = await renderToBuffer(
     BriefPdfDocument({
       projectName,
+      clientName: data.clientName ?? "",
       csName,
+      pmName,
       generatedDate,
       sections,
-      flowchartPng,
+      activityFlowcharts,
     }) as React.ReactElement,
   );
 
-  // Write files. NOTE: writes to /public — works in local dev.
-  // TODO(production): swap to S3/R2 (Vercel filesystem is read-only at runtime).
+  // Upload the PDF to Supabase Storage. Bucket is private — every download
+  // goes through GET /api/briefs/[id]/pdf which auth-checks first.
+  // Vercel's filesystem is read-only at runtime, so external storage is
+  // mandatory in prod.
   const safeProject = safeFilename(projectName);
   const dateSlug = todayIso();
-  const baseName = `4Brains_Brief_${safeProject}_${dateSlug}`;
-  const flowchartName = "User_Journey_Flowchart.png";
-  const zipName = `${baseName}.zip`;
-  const pdfName = `${baseName}.pdf`;
+  const pdfName = `4Brains_Brief_${safeProject}_${dateSlug}.pdf`;
 
-  const exportsDir = path.join(
-    process.cwd(),
-    "public",
-    "exports",
-    brief.id,
-  );
-  await fs.mkdir(exportsDir, { recursive: true });
-  await fs.writeFile(path.join(exportsDir, pdfName), pdfBuffer);
-  if (flowchartPng) {
-    await fs.writeFile(path.join(exportsDir, flowchartName), flowchartPng);
+  try {
+    await uploadPdf(brief.id as string, pdfName, pdfBuffer);
+  } catch (err) {
+    return NextResponse.json(
+      {
+        error: `Storage upload failed: ${
+          err instanceof Error ? err.message : "unknown"
+        }`,
+      },
+      { status: 500 },
+    );
   }
 
-  // Build ZIP
-  const zip = new JSZip();
-  zip.file(pdfName, pdfBuffer);
-  if (flowchartPng) zip.file(flowchartName, flowchartPng);
-  const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
-  await fs.writeFile(path.join(exportsDir, zipName), zipBuffer);
+  // The exported_pdf_url column now stores the proxy path our /api/briefs/[id]/pdf
+  // route reads. We also store the storage path inside it (after a # marker)
+  // so the proxy knows what to fetch from Storage. Keeps the schema simple
+  // (no new column needed for this v1).
+  const downloadUrl = `/api/briefs/${brief.id}/pdf`;
 
-  const pdfUrl = `/exports/${brief.id}/${pdfName}`;
-  const flowchartUrl = flowchartPng
-    ? `/exports/${brief.id}/${flowchartName}`
-    : null;
-  const zipUrl = `/exports/${brief.id}/${zipName}`;
+  // Persist PDF URL + flip status to FINAL on every export.
+  // Resilient fallback: if the brief_status enum hasn't been migrated to
+  // include 'FINAL' (see supabase/migrations/2026-05-08_brief_status_final.sql),
+  // we still save the URL so the user gets their download.
+  const { error: updateErr } = await supabase
+    .from("briefs")
+    .update({
+      status: "FINAL",
+      exported_pdf_url: downloadUrl,
+      exported_flowchart_url: null,
+    })
+    .eq("id", brief.id as string);
 
-  // Persist URLs + flip status to IN_REVIEW.
-  await prisma.brief.update({
-    where: { id: brief.id },
-    data: {
-      status: "IN_REVIEW",
-      exportedPdfUrl: pdfUrl,
-      exportedFlowchartUrl: flowchartUrl,
-    },
-  });
+  if (updateErr) {
+    console.warn(
+      "Status update failed (enum not migrated yet?), saving URL only:",
+      updateErr.message,
+    );
+    const { error: fallbackErr } = await supabase
+      .from("briefs")
+      .update({
+        exported_pdf_url: downloadUrl,
+        exported_flowchart_url: null,
+      })
+      .eq("id", brief.id as string);
+    if (fallbackErr) {
+      return NextResponse.json(
+        {
+          error: `Uploaded PDF but failed to update brief: ${fallbackErr.message}`,
+        },
+        { status: 500 },
+      );
+    }
+  }
 
   await writeChangeLog({
-    briefId: brief.id,
-    userId: session.user.id,
-    message: "Exported PDF and flowchart",
+    briefId: brief.id as string,
+    userId: user.id,
+    message: "Exported brief PDF",
   });
 
   return NextResponse.json({
-    pdfUrl,
-    flowchartUrl,
-    zipUrl,
-    zipName,
+    pdfUrl: downloadUrl,
+    pdfName,
+    flowchartCount: Object.keys(activityFlowcharts).length,
   });
 }

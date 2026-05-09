@@ -61,14 +61,14 @@ export function MermaidPreview({ source }: { source: string }) {
 
   if (!source.trim()) {
     return (
-      <div className="rounded border border-dashed border-neutral-300 px-4 py-8 text-center text-xs text-neutral-500">
+      <div className="rounded-card border border-dashed border-black/[0.08] bg-surface-alt/70 px-4 py-10 text-center text-[12px] text-ink-soft/70">
         Type steps above to preview the flowchart.
       </div>
     );
   }
 
   return (
-    <div className="rounded border border-neutral-200 bg-neutral-50 p-4">
+    <div className="rounded-card bg-surface-alt/70 p-4 shadow-hairline">
       {error ? (
         <p className="text-xs text-red-600">Flowchart error: {error}</p>
       ) : (

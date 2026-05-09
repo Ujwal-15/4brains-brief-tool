@@ -1,7 +1,5 @@
-import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Dashboard } from "@/components/Dashboard";
 import { Banner } from "@/components/Banner";
 import {
@@ -11,53 +9,52 @@ import {
   parseBriefData,
 } from "@/lib/briefs";
 
+type BriefRowFromDb = {
+  id: string;
+  status: string;
+  data: unknown;
+  updated_at: string;
+};
+
 export default async function Home({
   searchParams,
 }: {
-  searchParams?: { sent?: string; saved?: string; exported?: string };
+  searchParams?: { saved?: string; exported?: string };
 }) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) redirect("/login");
+  const supabase = createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
 
-  const userId = session.user.id;
+  // RLS handles "owner OR pm OR admin" — no explicit filter needed.
+  const { data: briefs } = await supabase
+    .from("briefs")
+    .select("id, status, data, updated_at")
+    .order("updated_at", { ascending: false });
 
-  const briefs = await prisma.brief.findMany({
-    where: {
-      OR: [{ createdById: userId }, { pmId: userId }],
+  const rows: BriefRow[] = ((briefs as BriefRowFromDb[] | null) ?? []).map(
+    (b) => {
+      const updatedAt = new Date(b.updated_at);
+      const { projectName, clientName, activityCount } = parseBriefData(b.data);
+      return {
+        id: b.id,
+        status: b.status as BriefStatus,
+        projectName,
+        clientName,
+        activityCount,
+        updatedAtLabel: formatBriefDate(updatedAt),
+        updatedAtISO: updatedAt.toISOString(),
+      };
     },
-    orderBy: { updatedAt: "desc" },
-    select: {
-      id: true,
-      status: true,
-      data: true,
-      updatedAt: true,
-    },
-  });
-
-  const rows: BriefRow[] = briefs.map((b) => {
-    const { projectName, clientName } = parseBriefData(b.data);
-    return {
-      id: b.id,
-      status: b.status as BriefStatus,
-      projectName,
-      clientName,
-      updatedAtLabel: formatBriefDate(b.updatedAt),
-      updatedAtISO: b.updatedAt.toISOString(),
-    };
-  });
+  );
 
   return (
     <>
-      {searchParams?.sent === "1" && (
-        <Banner kind="success">
-          Brief sent to PM for review. Email notification is not wired up yet —
-          let the PM know directly for now.
-        </Banner>
-      )}
       {searchParams?.exported === "1" && (
         <Banner kind="success">
-          Export complete. The ZIP started downloading; PDF and flowchart are
-          also linked from the brief detail page.
+          Export complete — the PDF is downloading and is also linked from
+          the brief detail page. Flowcharts are embedded inside.
         </Banner>
       )}
       {searchParams?.saved === "1" && <Banner kind="success">Draft saved.</Banner>}

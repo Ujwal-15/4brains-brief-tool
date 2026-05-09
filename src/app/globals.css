@@ -7,6 +7,163 @@ body {
   height: 100%;
 }
 
+/* ----------- Theme tokens -----------
+   Two themes share token names; values flip via the `.dark` class on
+   <html>. Tailwind picks these up via the semantic colors mapped in
+   tailwind.config.ts.
+
+   `<alpha-value>` lets us write text-text-page/55 etc. in JSX. */
+:root {
+  /* LIGHT (default) */
+  --page: 250 247 238;            /* cream */
+  --surface: 255 255 255;          /* white — content cards */
+  --surface-alt: 244 240 226;      /* cream-deep — nested cards */
+  --surface-glass: 250 247 238;    /* used with /70-/85 alpha for glass */
+  --ink-on-page: 14 15 18;         /* main text on page chrome */
+  --ink-muted: 58 59 64;           /* muted on page chrome */
+  --ink-faint: 107 114 128;        /* faint / placeholders on chrome */
+  --eyebrow-tone: 58 59 64;        /* small uppercase labels on chrome */
+  --italic-tone: 0 111 186;        /* hero italic accent — primary in light */
+  --hairline-on-page: 15 17 21;    /* alpha-modified to /6 etc. */
+
+  /* Background image stack used on body */
+  --body-grain: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  --body-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, rgba(244, 240, 226, 0.35) 50%, rgba(232, 226, 208, 0.25) 100%);
+  --body-dot: radial-gradient(rgba(15, 17, 21, 0.045) 1px, transparent 1px);
+
+  /* Hero panel gradient (Dashboard / BriefDetail / login card glow) */
+  --hero-gradient:
+    radial-gradient(120% 80% at 0% 0%, rgba(0, 111, 186, 0.10), transparent 60%);
+  --hero-bg: 255 255 255;          /* hero panel base — white in light */
+
+  /* Brand-line opacities for the gradient hairline */
+  --brand-line-opacity: 0.55;
+}
+
+.dark {
+  /* DARK */
+  --page: 10 16 32;                /* deep navy */
+  --surface: 250 247 238;          /* cream */
+  --surface-alt: 244 240 226;      /* cream-deep */
+  --surface-glass: 10 16 32;
+  --ink-on-page: 250 247 238;      /* cream — on navy chrome */
+  --ink-muted: 250 247 238;        /* cream — apply alpha at usage */
+  --ink-faint: 250 247 238;
+  --eyebrow-tone: 232 217 181;     /* champagne — warm against blue */
+  --italic-tone: 0 189 205;        /* support cyan pops on navy */
+  --hairline-on-page: 250 247 238;
+
+  --body-grain: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.06 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  --body-wash: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(0, 0, 0, 0.0) 40%, rgba(0, 0, 0, 0.20) 100%);
+  --body-dot: radial-gradient(rgba(232, 217, 181, 0.06) 1px, transparent 1px);
+
+  --hero-gradient:
+    radial-gradient(140% 100% at 0% 0%, rgba(0, 111, 186, 0.30), transparent 55%),
+    radial-gradient(120% 80% at 100% 50%, rgba(0, 189, 205, 0.18), transparent 60%);
+  --hero-bg: 14 21 42;             /* slightly lighter than page */
+
+  --brand-line-opacity: 0.65;
+}
+
 body {
-  @apply bg-white text-neutral-900 font-sans antialiased;
+  @apply font-sans antialiased;
+  color: rgb(var(--ink-on-page));
+  background-color: rgb(var(--page));
+  background-image: var(--body-wash), var(--body-dot), var(--body-grain);
+  background-repeat: no-repeat, repeat, repeat;
+  background-size:
+    100% 100%,
+    24px 24px,
+    220px 220px;
+  background-attachment: fixed, fixed, scroll;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* ----------- Editorial type helpers ----------- */
+
+.h-display {
+  @apply font-sans text-[44px] leading-[1.04] tracking-tightest sm:text-[60px];
+  font-weight: 500;
+}
+.h-display-sm {
+  @apply font-sans text-[32px] leading-[1.05] tracking-tightest sm:text-[42px];
+  font-weight: 500;
+}
+.h-display .italic,
+.h-display-sm .italic {
+  @apply font-display;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  /* Italic accents inside display headings flip per theme via --italic-tone */
+  color: rgb(var(--italic-tone));
+}
+
+/* Theme-aware eyebrow — ink-soft in light, champagne in dark. */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: rgb(var(--eyebrow-tone));
+}
+
+/* Hero panel — gradient flips per theme via --hero-gradient. */
+.hero-panel {
+  background-color: rgb(var(--hero-bg));
+  position: relative;
+}
+.hero-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--hero-gradient);
+  pointer-events: none;
+}
+
+.hairline {
+  border-color: rgb(var(--hairline-on-page) / 0.06);
+}
+
+/* ----------- Animated background blobs ----------- */
+
+@keyframes blob-drift-1 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(50px, -32px, 0) scale(1.1); }
+  66% { transform: translate3d(-30px, 26px, 0) scale(0.94); }
+}
+@keyframes blob-drift-2 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  40% { transform: translate3d(-50px, 38px, 0) scale(1.08); }
+  75% { transform: translate3d(32px, -22px, 0) scale(0.92); }
+}
+@keyframes blob-drift-3 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(40px, 32px, 0) scale(1.12); }
+}
+@keyframes blob-drift-4 {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  35% { transform: translate3d(-26px, -42px, 0) scale(1.06); }
+  70% { transform: translate3d(34px, 18px, 0) scale(0.95); }
+}
+
+.bg-blob-1 { animation: blob-drift-1 26s ease-in-out infinite; }
+.bg-blob-2 { animation: blob-drift-2 32s ease-in-out infinite; }
+.bg-blob-3 { animation: blob-drift-3 38s ease-in-out infinite; }
+.bg-blob-4 { animation: blob-drift-4 44s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-blob-1, .bg-blob-2, .bg-blob-3, .bg-blob-4 { animation: none; }
+}
+
+/* Brand-color hairline divider (used under the navy header). */
+.brand-line {
+  height: 1px;
+  background-image: linear-gradient(
+    90deg,
+    rgba(0, 111, 186, 0) 0%,
+    rgba(0, 111, 186, var(--brand-line-opacity)) 30%,
+    rgba(0, 189, 205, var(--brand-line-opacity)) 60%,
+    rgba(0, 174, 94, var(--brand-line-opacity)) 90%,
+    rgba(0, 174, 94, 0) 100%
+  );
 }

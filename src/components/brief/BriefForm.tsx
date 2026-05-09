@@ -15,14 +15,9 @@ import {
   isSection4Complete,
   isSection5Complete,
   isSection6Complete,
-  isSection7Complete,
-  isSection8Complete,
-  isSection9Complete,
-  isSection10Complete,
-  isSection11Complete,
 } from "@/lib/briefSchema";
 import {
-  buildFlowchartPng,
+  buildFlowchartPngsForActivities,
   postExport,
   triggerDownload,
 } from "@/lib/clientExport";
@@ -33,36 +28,23 @@ import { Section3 } from "./sections/Section3";
 import { Section4 } from "./sections/Section4";
 import { Section5 } from "./sections/Section5";
 import { Section6 } from "./sections/Section6";
-import { Section7 } from "./sections/Section7";
-import { Section8 } from "./sections/Section8";
-import { Section9 } from "./sections/Section9";
-import { Section10 } from "./sections/Section10";
-import { Section11 } from "./sections/Section11";
-
-type PMOption = { id: string; name: string; email: string };
+import { PostExportModal } from "./PostExportModal";
 
 const AUTO_SAVE_INTERVAL_MS = 30_000;
 
 const SECTION_META: { index: number; title: string }[] = [
   { index: 1, title: "Project & Client Info" },
   { index: 2, title: "Event Schedule & Venue" },
-  { index: 3, title: "Activity Overview" },
-  { index: 4, title: "User Journey" },
-  { index: 5, title: "Client Requirements" },
-  { index: 6, title: "Design & Branding" },
-  { index: 7, title: "Data & Personalization" },
-  { index: 8, title: "Fabrication & On-site" },
-  { index: 9, title: "Deliverables" },
-  { index: 10, title: "Timeline" },
-  { index: 11, title: "Additional Notes" },
+  { index: 3, title: "Activities" },
+  { index: 4, title: "Design & Branding" },
+  { index: 5, title: "Fabrication & On-site" },
+  { index: 6, title: "Additional Notes" },
 ];
 
 export function BriefForm({
-  pmOptions,
   briefId: initialBriefId,
   initialData,
 }: {
-  pmOptions: PMOption[];
   briefId?: string;
   initialData?: BriefFormData;
 }) {
@@ -76,11 +58,13 @@ export function BriefForm({
   });
 
   const { control, getValues, setError, clearErrors, formState } = methods;
-
   const values = useWatch({ control }) as BriefFormData;
 
   const [openSections, setOpenSections] = useState<Record<number, boolean>>(
     () => Object.fromEntries(SECTION_META.map((s) => [s.index, s.index === 1])),
+  );
+  const [openActivities, setOpenActivities] = useState<Record<number, boolean>>(
+    { 0: true },
   );
   const [briefId, setBriefId] = useState<string | null>(initialBriefId ?? null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
@@ -88,6 +72,13 @@ export function BriefForm({
     "idle" | "saving" | "error"
   >("idle");
   const [submitting, setSubmitting] = useState(false);
+  const [exportResult, setExportResult] = useState<{
+    pdfUrl: string;
+    pdfName: string;
+    flowchartCount: number;
+    totalActivities: number;
+    projectName: string;
+  } | null>(null);
 
   const dirtyRef = useRef(false);
   const lastSavedSnapshot = useRef<string>(JSON.stringify(startingValues));
@@ -97,31 +88,31 @@ export function BriefForm({
     briefIdRef.current = briefId;
   }, [briefId]);
 
-  // Mark dirty when current values diverge from the last saved snapshot.
   useEffect(() => {
     const current = JSON.stringify(values);
     if (current !== lastSavedSnapshot.current) dirtyRef.current = true;
   }, [values]);
 
-  // Clear validation errors as the user fills in the offending fields.
+  // Clear validation errors as the user fills in offending fields.
   useEffect(() => {
     const errored = Object.keys(formState.errors);
     if (errored.length === 0) return;
     errored.forEach((key) => {
-      const v = values[key as keyof BriefFormData];
-      const filled = Array.isArray(v)
+      // Errors may be set on nested paths like activities.0.userJourney —
+      // the RHF errors object stores them at the top-level key for flat
+      // fields and as nested objects for arrays. The resolved value via
+      // getValues() with the path works either way.
+      const v = methods.getValues(key as never) as unknown;
+      const f = Array.isArray(v)
         ? v.length > 0
         : typeof v === "string"
           ? v.trim().length > 0
           : false;
-      if (filled) clearErrors(key as keyof BriefFormData);
+      if (f) clearErrors(key as never);
     });
-    // We intentionally read formState.errors without subscribing; re-run on
-    // values changes only — that's what triggers the "did this fix it?" check.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values]);
 
-  // Tick a clock so "Xm ago" updates every minute.
   const [, setNowTick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => setNowTick((n) => n + 1), 60_000);
@@ -131,7 +122,6 @@ export function BriefForm({
   async function persist(payload: {
     data: string;
     status?: string;
-    pmId?: string | null;
   }): Promise<{ id: string } | null> {
     if (briefIdRef.current) {
       const res = await fetch(`/api/briefs/${briefIdRef.current}`, {
@@ -150,14 +140,11 @@ export function BriefForm({
       if (!res.ok) return null;
       const created = (await res.json()) as { id: string };
       setBriefId(created.id);
-      if (payload.status || payload.pmId !== undefined) {
+      if (payload.status) {
         await fetch(`/api/briefs/${created.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: payload.status,
-            pmId: payload.pmId,
-          }),
+          body: JSON.stringify({ status: payload.status }),
         });
       }
       return created;
@@ -187,9 +174,6 @@ export function BriefForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Set RHF errors for missing required fields, open the offending section,
-  // scroll the first one into view, and focus its input. Returns true if the
-  // form has any validation errors.
   function applyValidation(): boolean {
     clearErrors();
     const v = getValues();
@@ -197,16 +181,18 @@ export function BriefForm({
     if (missing.length === 0) return false;
 
     missing.forEach((m) => {
-      setError(m.name, { type: "required", message: "Required" });
+      setError(m.name as never, { type: "required", message: "Required" });
     });
 
     const first = missing[0];
     setOpenSections((s) => ({ ...s, [first.section]: true }));
+    if (first.activityIndex !== undefined) {
+      setOpenActivities((s) => ({ ...s, [first.activityIndex!]: true }));
+    }
 
-    // Defer to next frame so the section actually expands before scrolling.
     requestAnimationFrame(() => {
       const el = document.querySelector<HTMLElement>(
-        `[data-field="${first.name}"]`,
+        `[data-field="${cssEscape(first.name)}"]`,
       );
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -224,43 +210,13 @@ export function BriefForm({
     setSubmitting(true);
     setSaveState("saving");
     const snapshot = JSON.stringify(getValues());
-    const v = getValues();
-    const result = await persist({
-      data: snapshot,
-      status: "DRAFT",
-      pmId: v.pmId || null,
-    });
+    const result = await persist({ data: snapshot, status: "DRAFT" });
     if (result) {
       lastSavedSnapshot.current = snapshot;
       dirtyRef.current = false;
       setSavedAt(new Date());
       setSaveState("idle");
-      // Edit mode: back to detail. New: back to dashboard.
       router.push(isEdit ? `/briefs/${result.id}?saved=1` : "/?saved=1");
-    } else {
-      setSaveState("error");
-    }
-    setSubmitting(false);
-  }
-
-  async function sendToPM() {
-    if (applyValidation()) return; // errors set + scrolled to first
-
-    const v = getValues();
-    setSubmitting(true);
-    setSaveState("saving");
-    const snapshot = JSON.stringify(v);
-    const result = await persist({
-      data: snapshot,
-      status: "IN_REVIEW",
-      pmId: v.pmId,
-    });
-    if (result) {
-      lastSavedSnapshot.current = snapshot;
-      dirtyRef.current = false;
-      setSavedAt(new Date());
-      setSaveState("idle");
-      router.push("/?sent=1");
     } else {
       setSaveState("error");
     }
@@ -269,15 +225,11 @@ export function BriefForm({
 
   async function exportPdf() {
     if (applyValidation()) return;
-
     setSubmitting(true);
     setSaveState("saving");
-
-    // 1. Force-save the latest data so the server-side export reads fresh
-    //    state. This also creates the brief if it doesn't exist yet.
     const v = getValues();
     const snapshot = JSON.stringify(v);
-    const saved = await persist({ data: snapshot, pmId: v.pmId || null });
+    const saved = await persist({ data: snapshot });
     if (!saved) {
       setSaveState("error");
       setSubmitting(false);
@@ -288,33 +240,40 @@ export function BriefForm({
     setSavedAt(new Date());
     setSaveState("idle");
 
-    // 2. Render Mermaid PNG client-side. Skip silently if it fails — the PDF
-    //    can still ship without an embedded flowchart.
-    let png: Blob | null = null;
+    // Render one flowchart PNG per activity (skipping any with no journey).
+    // These get embedded inline inside the PDF below — single-file output.
+    let flowcharts: Map<number, Blob> = new Map();
     try {
-      png = await buildFlowchartPng(v.userJourney);
+      flowcharts = await buildFlowchartPngsForActivities(v.activities);
     } catch (err) {
-      console.warn("Flowchart render failed, exporting PDF only", err);
+      console.warn("Flowchart render failed, exporting PDF without charts", err);
     }
 
-    // 3. Hit the server export endpoint.
-    const result = await postExport(saved.id, png);
+    const result = await postExport(saved.id, flowcharts);
     if (!result.ok) {
       alert(result.error || "Export failed");
       setSubmitting(false);
       return;
     }
 
-    // 4. Trigger ZIP download, then return to dashboard.
-    triggerDownload(result.data.zipUrl, result.data.zipName);
-    router.push("/?exported=1");
+    // Auto-trigger the download AND show the modal so the user can grab
+    // the PDF or jump straight into Share. No redirect — user stays on
+    // the form, lands in the modal, picks their next action.
+    triggerDownload(result.data.pdfUrl, result.data.pdfName);
+    setExportResult({
+      pdfUrl: result.data.pdfUrl,
+      pdfName: result.data.pdfName,
+      flowchartCount: result.data.flowchartCount,
+      totalActivities: v.activities.length,
+      projectName: v.projectName || "Untitled brief",
+    });
     setSubmitting(false);
   }
 
   const completed = completedSectionCount(values);
   const errorCount = Object.keys(formState.errors).length;
 
-  const toggle = (idx: number) =>
+  const toggleSection = (idx: number) =>
     setOpenSections((s) => ({ ...s, [idx]: !s[idx] }));
 
   const sectionCompleteFns: Record<number, (v: BriefFormData) => boolean> = {
@@ -324,23 +283,31 @@ export function BriefForm({
     4: isSection4Complete,
     5: isSection5Complete,
     6: isSection6Complete,
-    7: isSection7Complete,
-    8: isSection8Complete,
-    9: isSection9Complete,
-    10: isSection10Complete,
-    11: isSection11Complete,
   };
 
   return (
     <FormProvider {...methods}>
-      <form onSubmit={(e) => e.preventDefault()} className="space-y-4 pb-32">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {isEdit ? "Edit Brief" : "New Brief"}
-          </h1>
-          <p className="text-xs text-neutral-500">
-            Auto-saves every 30 seconds.
-          </p>
+      <form onSubmit={(e) => e.preventDefault()} className="space-y-5 pb-32">
+        <div className="space-y-2 pb-2">
+          <div className="eyebrow">
+            {isEdit ? "Editing" : "New brief"}
+          </div>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <h1 className="h-display-sm text-ink-on-page">
+              {isEdit ? (
+                <>
+                  Refine the <span className="italic text-support">brief.</span>
+                </>
+              ) : (
+                <>
+                  A new brief, <span className="italic text-support">begun.</span>
+                </>
+              )}
+            </h1>
+            <p className="text-[12px] text-ink-on-page/50">
+              Auto-saves every 30 seconds.
+            </p>
+          </div>
         </div>
 
         {SECTION_META.map((s) => (
@@ -350,9 +317,9 @@ export function BriefForm({
             title={s.title}
             open={!!openSections[s.index]}
             complete={sectionCompleteFns[s.index](values)}
-            onToggle={() => toggle(s.index)}
+            onToggle={() => toggleSection(s.index)}
           >
-            {renderSectionBody(s.index, pmOptions)}
+            {renderSectionBody(s.index, openActivities, setOpenActivities)}
           </Section>
         ))}
       </form>
@@ -365,40 +332,54 @@ export function BriefForm({
         submitting={submitting}
         errorCount={errorCount}
         onSaveDraft={saveDraft}
-        onSendToPM={sendToPM}
         onExport={exportPdf}
+      />
+
+      <PostExportModal
+        open={exportResult !== null}
+        onClose={() => setExportResult(null)}
+        pdfUrl={exportResult?.pdfUrl ?? ""}
+        pdfName={exportResult?.pdfName ?? ""}
+        projectName={exportResult?.projectName ?? ""}
+        flowchartCount={exportResult?.flowchartCount ?? 0}
+        totalActivities={exportResult?.totalActivities ?? 0}
       />
     </FormProvider>
   );
 }
 
-function renderSectionBody(idx: number, pmOptions: PMOption[]) {
+function renderSectionBody(
+  idx: number,
+  openActivities: Record<number, boolean>,
+  setOpenActivities: (next: Record<number, boolean>) => void,
+) {
   switch (idx) {
     case 1:
-      return <Section1 pmOptions={pmOptions} />;
+      return <Section1 />;
     case 2:
       return <Section2 />;
     case 3:
-      return <Section3 />;
+      return (
+        <Section3 openMap={openActivities} setOpenMap={setOpenActivities} />
+      );
     case 4:
       return <Section4 />;
     case 5:
       return <Section5 />;
     case 6:
       return <Section6 />;
-    case 7:
-      return <Section7 />;
-    case 8:
-      return <Section8 />;
-    case 9:
-      return <Section9 />;
-    case 10:
-      return <Section10 />;
-    case 11:
-      return <Section11 />;
     default:
       return null;
   }
+}
+
+// CSS.escape polyfill — `activities.0.userJourney` contains dots which
+// break attribute selectors unless escaped.
+function cssEscape(s: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(s);
+  }
+  return s.replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
 }
 
 function StickyBar({
@@ -409,7 +390,6 @@ function StickyBar({
   submitting,
   errorCount,
   onSaveDraft,
-  onSendToPM,
   onExport,
 }: {
   completed: number;
@@ -419,56 +399,55 @@ function StickyBar({
   submitting: boolean;
   errorCount: number;
   onSaveDraft: () => void;
-  onSendToPM: () => void;
   onExport: () => void;
 }) {
+  const pct = Math.round((completed / Math.max(total, 1)) * 100);
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-20 border-t border-neutral-200 bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl flex-col gap-3 px-6 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-600">
-          <span>
-            <span className="font-semibold text-neutral-900">{completed}</span>
-            <span> of {total} sections complete</span>
+    <div className="fixed bottom-0 left-0 right-0 z-20 bg-page/85 backdrop-blur-xl">
+      <div aria-hidden className="brand-line" />
+      <div className="mx-auto flex max-w-6xl flex-col gap-3 px-6 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-ink-on-page/60">
+          <span className="flex items-center gap-2.5">
+            <span className="relative h-1 w-24 overflow-hidden rounded-full bg-ink-on-page/10">
+              <span
+                className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-primary to-support transition-all"
+                style={{ width: `${pct}%` }}
+              />
+            </span>
+            <span>
+              <span className="font-semibold text-ink-on-page">{completed}</span>
+              <span className="text-ink-on-page/55"> / {total} sections</span>
+            </span>
           </span>
-          <span aria-hidden className="text-neutral-300">
-            ·
-          </span>
+          <span aria-hidden className="text-ink-on-page/25">·</span>
           <SaveStatus saveState={saveState} savedAt={savedAt} />
           {errorCount > 0 && (
             <>
-              <span aria-hidden className="text-neutral-300">
-                ·
-              </span>
-              <span className="text-red-600">
+              <span aria-hidden className="text-ink-on-page/25">·</span>
+              <span className="text-red-400">
                 {errorCount} field{errorCount === 1 ? "" : "s"} need attention
               </span>
             </>
           )}
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Secondary: Save Draft */}
           <button
             type="button"
             disabled={submitting}
             onClick={onSaveDraft}
-            className="rounded border border-neutral-300 px-3 py-1.5 text-sm text-neutral-800 hover:bg-neutral-100 disabled:opacity-60"
+            className="rounded-full border border-ink-on-page/15 bg-ink-on-page/5 px-4 py-1.5 text-[13px] font-medium text-ink-on-page/80 transition-colors hover:bg-ink-on-page/10 hover:text-ink-on-page disabled:opacity-60"
           >
             Save Draft
           </button>
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={onSendToPM}
-            className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-60"
-          >
-            Send to PM
-          </button>
+          {/* Primary: Export */}
           <button
             type="button"
             disabled={submitting}
             onClick={onExport}
-            className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-60"
+            className="rounded-full bg-primary px-4 py-1.5 text-[13px] font-medium text-white shadow-glow-primary transition-all hover:-translate-y-px hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
           >
-            Export PDF + Flowchart
+            Export PDF
           </button>
         </div>
       </div>
@@ -483,11 +462,12 @@ function SaveStatus({
   saveState: "idle" | "saving" | "error";
   savedAt: Date | null;
 }) {
-  if (saveState === "saving") return <span>Saving…</span>;
+  if (saveState === "saving") return <span className="text-ink-on-page/70">Saving…</span>;
   if (saveState === "error")
-    return <span className="text-red-600">Save failed</span>;
-  if (!savedAt) return <span className="text-neutral-400">Not saved yet</span>;
-  return <span>Draft saved · {relativeTime(savedAt)}</span>;
+    return <span className="text-red-400">Save failed</span>;
+  if (!savedAt)
+    return <span className="text-ink-on-page/40">Not saved yet</span>;
+  return <span className="text-ink-on-page/70">Draft saved · {relativeTime(savedAt)}</span>;
 }
 
 function relativeTime(d: Date): string {

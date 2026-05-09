@@ -1,14 +1,11 @@
 "use client";
 
-import { Controller, useFormContext } from "react-hook-form";
+import { useFormContext } from "react-hook-form";
 import type { BriefFormData } from "@/lib/briefSchema";
-import { RECEIVED_VIA_OPTIONS } from "@/lib/briefSchema";
 import { Field, inputClass } from "../Field";
 
-type PMOption = { id: string; name: string; email: string };
-
-export function Section1({ pmOptions }: { pmOptions: PMOption[] }) {
-  const { register, control } = useFormContext<BriefFormData>();
+export function Section1() {
+  const { register } = useFormContext<BriefFormData>();
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -27,21 +24,11 @@ export function Section1({ pmOptions }: { pmOptions: PMOption[] }) {
           <Field label="POC Name" required name="pocName">
             <input className={inputClass} {...register("pocName")} />
           </Field>
-          <Field label="POC Designation" required name="pocDesignation">
-            <input className={inputClass} {...register("pocDesignation")} />
-          </Field>
           <Field label="POC Phone" required name="pocPhone">
             <input
               type="tel"
               className={inputClass}
               {...register("pocPhone")}
-            />
-          </Field>
-          <Field label="POC Email" required name="pocEmail">
-            <input
-              type="email"
-              className={inputClass}
-              {...register("pocEmail")}
             />
           </Field>
         </div>
@@ -51,20 +38,11 @@ export function Section1({ pmOptions }: { pmOptions: PMOption[] }) {
         <input className={inputClass} {...register("csbdOwner")} />
       </Field>
 
-      <Field label="PM Assigned" required name="pmId">
-        <Controller
-          control={control}
-          name="pmId"
-          render={({ field }) => (
-            <select className={inputClass} {...field}>
-              <option value="">Select PM…</option>
-              {pmOptions.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name} ({u.email})
-                </option>
-              ))}
-            </select>
-          )}
+      <Field label="PM Assigned" required name="pmName">
+        <input
+          className={inputClass}
+          placeholder="Type the PM's name"
+          {...register("pmName")}
         />
       </Field>
 
@@ -73,23 +51,6 @@ export function Section1({ pmOptions }: { pmOptions: PMOption[] }) {
           type="date"
           className={inputClass}
           {...register("briefReceivedOn")}
-        />
-      </Field>
-
-      <Field label="Brief Received Via">
-        <Controller
-          control={control}
-          name="briefReceivedVia"
-          render={({ field }) => (
-            <select className={inputClass} {...field}>
-              <option value="">—</option>
-              {RECEIVED_VIA_OPTIONS.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
-            </select>
-          )}
         />
       </Field>
     </div>

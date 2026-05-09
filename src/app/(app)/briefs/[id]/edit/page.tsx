@@ -1,37 +1,38 @@
 import { notFound, redirect } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { BriefForm } from "@/components/brief/BriefForm";
 import { parseBriefData } from "@/lib/briefData";
+
+type BriefRow = {
+  id: string;
+  data: unknown;
+  created_by_id: string;
+  pm_id: string | null;
+};
 
 export default async function EditBriefPage({
   params,
 }: {
   params: { id: string };
 }) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) redirect("/login");
+  const supabase = createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
 
-  const brief = await prisma.brief.findUnique({
-    where: { id: params.id },
-    select: { id: true, data: true, createdById: true, pmId: true },
-  });
-  if (!brief) notFound();
-
-  const isOwner = brief.createdById === session.user.id;
-  const isAdmin = session.user.role === "ADMIN";
-  if (!isOwner && !isAdmin) notFound();
-
-  const pms = await prisma.user.findMany({
-    where: { role: "PM" },
-    orderBy: { name: "asc" },
-    select: { id: true, name: true, email: true },
-  });
+  // Flat team — anyone signed in can edit any brief. Whitelist sits
+  // upstream at the sign-in layer.
+  const { data: rawBrief } = await supabase
+    .from("briefs")
+    .select("id, data, created_by_id, pm_id")
+    .eq("id", params.id)
+    .maybeSingle();
+  if (!rawBrief) notFound();
+  const brief = rawBrief as BriefRow;
 
   return (
     <BriefForm
-      pmOptions={pms}
       briefId={brief.id}
       initialData={parseBriefData(brief.data)}
     />

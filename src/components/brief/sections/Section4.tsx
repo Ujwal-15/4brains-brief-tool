@@ -1,79 +1,147 @@
 "use client";
 
 import { Controller, useFormContext, useWatch } from "react-hook-form";
-import { useEffect, useState } from "react";
 import type { BriefFormData } from "@/lib/briefSchema";
-import { parseJourneySteps, stepsToMermaid } from "@/lib/briefSchema";
-import { Field, textareaClass } from "../Field";
-import { MermaidPreview } from "../MermaidPreview";
-
-const PLACEHOLDER = `Step 1: User scans QR at registration desk
-Step 2: System creates a personalised badge
-Step 3: Badge is printed and handed to user
-Step 4: User enters venue`;
+import { Field, ToggleRow, inputClass, textareaClass } from "../Field";
 
 export function Section4() {
   const { register, control } = useFormContext<BriefFormData>();
-  const journey = useWatch({ control, name: "userJourney" });
-
-  // Debounce mermaid source so we don't re-render on every keystroke.
-  const [debounced, setDebounced] = useState("");
-  useEffect(() => {
-    const t = setTimeout(() => {
-      setDebounced(stepsToMermaid(parseJourneySteps(journey || "")));
-    }, 300);
-    return () => clearTimeout(t);
-  }, [journey]);
+  const clientProvidesDesign = useWatch({
+    control,
+    name: "clientProvidesDesign",
+  });
+  const sharedYet = useWatch({ control, name: "brandGuidelinesSharedYet" });
+  const variations = useWatch({ control, name: "slotDayDesignVariations" });
 
   return (
-    <div className="space-y-5">
-      <Field
-        label="User Journey"
-        required
-        name="userJourney"
-        hint="One step per line. ‘Step 1:’, ‘1.’, or ‘-’ prefixes all work."
-      >
-        <textarea
-          className={`${textareaClass} min-h-[140px] font-mono`}
-          placeholder={PLACEHOLDER}
-          {...register("userJourney")}
-        />
-      </Field>
-
+    <div className="space-y-6">
       <div>
-        <div className="mb-2 text-xs font-medium uppercase tracking-wide text-neutral-500">
-          Flowchart preview
+        <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-soft/70">
+          Who provides design + brand guidelines?
         </div>
-        <MermaidPreview source={debounced} />
-      </div>
-
-      <Field
-        label="Custom Flowchart Override"
-        hint="Optional. File upload coming in a later step — file name is saved to draft for now."
-      >
         <Controller
           control={control}
-          name="customFlowchart"
+          name="clientProvidesDesign"
           render={({ field }) => (
-            <>
-              <input
-                type="file"
-                accept="image/*,.pdf"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  field.onChange(f ? f.name : "");
-                }}
-                className="block w-full text-sm text-neutral-700 file:mr-3 file:rounded file:border-0 file:bg-neutral-100 file:px-3 file:py-1.5 file:text-xs file:font-medium hover:file:bg-neutral-200"
-              />
-              {field.value && (
-                <p className="mt-2 text-xs text-neutral-600">
-                  Selected: {field.value}
-                </p>
-              )}
-            </>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <label
+                className={`flex cursor-pointer items-center gap-2.5 rounded-card p-3.5 text-[13px] transition-all ${
+                  field.value === true
+                    ? "bg-white shadow-soft ring-1 ring-primary/20"
+                    : "bg-surface-alt/70 shadow-hairline hover:bg-surface-alt"
+                }`}
+              >
+                <input
+                  type="radio"
+                  className="h-4 w-4 accent-primary"
+                  checked={field.value === true}
+                  onChange={() => field.onChange(true)}
+                />
+                <span className="text-ink">
+                  Client provides design / brand guidelines
+                </span>
+              </label>
+              <label
+                className={`flex cursor-pointer items-center gap-2.5 rounded-card p-3.5 text-[13px] transition-all ${
+                  field.value === false
+                    ? "bg-white shadow-soft ring-1 ring-primary/20"
+                    : "bg-surface-alt/70 shadow-hairline hover:bg-surface-alt"
+                }`}
+              >
+                <input
+                  type="radio"
+                  className="h-4 w-4 accent-primary"
+                  checked={field.value === false}
+                  onChange={() => field.onChange(false)}
+                />
+                <span className="text-ink">
+                  4Brains uses our own internal style
+                </span>
+              </label>
+            </div>
           )}
         />
+      </div>
+
+      {clientProvidesDesign && (
+        <div className="space-y-3 rounded-card bg-surface-alt/70 p-5 shadow-hairline">
+          <Controller
+            control={control}
+            name="brandGuidelinesSharedYet"
+            render={({ field }) => (
+              <ToggleRow
+                label="Has the client shared the brand guidelines yet?"
+                hint="If not, we'll flag it for follow-up"
+                value={field.value}
+                onChange={field.onChange}
+              />
+            )}
+          />
+          {!sharedYet && (
+            <Field
+              label="Flag for follow-up"
+              required
+              name="brandGuidelinesFollowUp"
+              hint="Note what needs to be requested from the client"
+            >
+              <textarea
+                className={textareaClass}
+                {...register("brandGuidelinesFollowUp")}
+              />
+            </Field>
+          )}
+        </div>
+      )}
+
+      <div className="rounded-card bg-surface-alt/70 p-5 shadow-hairline">
+        <Controller
+          control={control}
+          name="logoFilesReceived"
+          render={({ field }) => (
+            <ToggleRow
+              label="Logo files received from client"
+              hint="High-res, vector preferred"
+              value={field.value}
+              onChange={field.onChange}
+            />
+          )}
+        />
+      </div>
+
+      <Field label="Brand Colors / Fonts">
+        <input
+          className={inputClass}
+          placeholder="e.g. #006FBA, Inter / Roboto"
+          {...register("brandColorsFonts")}
+        />
       </Field>
+
+      <div className="space-y-3 rounded-card bg-surface-alt/70 p-5 shadow-hairline">
+        <Controller
+          control={control}
+          name="slotDayDesignVariations"
+          render={({ field }) => (
+            <ToggleRow
+              label="Slot / Day-wise design variations"
+              hint="Different visuals across event days or time slots"
+              value={field.value}
+              onChange={field.onChange}
+            />
+          )}
+        />
+        {variations && (
+          <Field
+            label="Describe the variations"
+            required
+            name="slotDayDesignVariationsNotes"
+          >
+            <textarea
+              className={textareaClass}
+              {...register("slotDayDesignVariationsNotes")}
+            />
+          </Field>
+        )}
+      </div>
     </div>
   );
 }

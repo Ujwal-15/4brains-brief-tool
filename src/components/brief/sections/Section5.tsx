@@ -1,72 +1,157 @@
 "use client";
 
-import { Controller, useFormContext } from "react-hook-form";
+import { Controller, useFormContext, useWatch } from "react-hook-form";
 import type { BriefFormData } from "@/lib/briefSchema";
-import { Field, inputClass, textareaClass } from "../Field";
+import {
+  Field,
+  ToggleRow,
+  inputClass,
+  textareaClass,
+} from "../Field";
 
 export function Section5() {
   const { register, control } = useFormContext<BriefFormData>();
+  const fabClient = useWatch({ control, name: "fabricationByClient" });
+  const fab4B = useWatch({ control, name: "fabricationByFourBrains" });
+  const oneLine = useWatch({ control, name: "oneLineDiagramRequired" });
+  const internetByClient = useWatch({ control, name: "internetByClient" });
 
   return (
-    <div className="space-y-4">
-      <Field
-        label="What does the client specifically want?"
-        required
-        name="clientWants"
-      >
-        <textarea className={textareaClass} {...register("clientWants")} />
-      </Field>
+    <div className="space-y-6">
+      {/* Fabrication — split into Client / 4Brains */}
+      <div className="space-y-3">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-soft/70">
+          Fabrication
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {/* Client side */}
+          <div className="space-y-3 rounded-card bg-surface-alt/70 p-5 shadow-hairline">
+            <Controller
+              control={control}
+              name="fabricationByClient"
+              render={({ field }) => (
+                <ToggleRow
+                  label="From client"
+                  hint="What the client is bringing or building"
+                  value={field.value}
+                  onChange={field.onChange}
+                />
+              )}
+            />
+            {fabClient && (
+              <Field
+                label="What client is providing"
+                name="fabricationClientNotes"
+                hint="e.g. backdrop frame, branded counter, signage they're shipping"
+              >
+                <textarea
+                  className={textareaClass}
+                  {...register("fabricationClientNotes")}
+                />
+              </Field>
+            )}
+          </div>
 
-      <Field
-        label="Must-have features / non-negotiables"
-        required
-        name="mustHaves"
-      >
-        <textarea className={textareaClass} {...register("mustHaves")} />
-      </Field>
+          {/* 4Brains side */}
+          <div className="space-y-3 rounded-card bg-surface-alt/70 p-5 shadow-hairline">
+            <Controller
+              control={control}
+              name="fabricationByFourBrains"
+              render={({ field }) => (
+                <ToggleRow
+                  label="From 4Brains"
+                  hint="What our team is fabricating in-house"
+                  value={field.value}
+                  onChange={field.onChange}
+                />
+              )}
+            />
+            {fab4B && (
+              <Field
+                label="What 4Brains will fabricate"
+                required
+                name="fabricationFourBrainsNotes"
+                hint="Size, material, vendor, references — anything we're building"
+              >
+                <textarea
+                  className={textareaClass}
+                  {...register("fabricationFourBrainsNotes")}
+                />
+              </Field>
+            )}
+          </div>
+        </div>
+      </div>
 
-      <Field label="Things client has explicitly said NO to">
-        <textarea
-          className={textareaClass}
-          {...register("thingsClientSaidNo")}
-        />
-      </Field>
-
-      <Field
-        label="Reference links / videos / mood boards"
-        hint="Paste links above. Optional file uploads below — file names saved to draft only."
-      >
-        <textarea
-          className={`${inputClass} min-h-[60px]`}
-          placeholder="https://..."
-          {...register("referenceLinks")}
-        />
+      {/* One-line diagram */}
+      <div className="space-y-3 rounded-card bg-surface-alt/70 p-5 shadow-hairline">
         <Controller
           control={control}
-          name="referenceMoodFiles"
+          name="oneLineDiagramRequired"
           render={({ field }) => (
-            <div className="mt-2">
-              <input
-                type="file"
-                multiple
-                onChange={(e) =>
-                  field.onChange(
-                    Array.from(e.target.files ?? []).map((f) => f.name),
-                  )
-                }
-                className="block w-full text-sm text-neutral-700 file:mr-3 file:rounded file:border-0 file:bg-neutral-100 file:px-3 file:py-1.5 file:text-xs file:font-medium hover:file:bg-neutral-200"
-              />
-              {field.value.length > 0 && (
-                <ul className="mt-2 space-y-1 text-xs text-neutral-600">
-                  {field.value.map((n, i) => (
-                    <li key={`${n}-${i}`}>• {n}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
+            <ToggleRow
+              label="One-line diagram (1LD) required?"
+              hint="Schematic for power / signal flow / AV layout"
+              value={field.value}
+              onChange={field.onChange}
+            />
           )}
         />
-      </Field>
+        {oneLine && (
+          <Field
+            label="1LD notes"
+            name="oneLineDiagramNotes"
+            hint="Who owns it, when it's due, links to references"
+          >
+            <textarea
+              className={textareaClass}
+              {...register("oneLineDiagramNotes")}
+            />
+          </Field>
+        )}
+      </div>
+
+      {/* Internet */}
+      <div className="space-y-3 rounded-card bg-surface-alt/70 p-5 shadow-hairline">
+        <Controller
+          control={control}
+          name="internetByClient"
+          render={({ field }) => (
+            <ToggleRow
+              label="Internet provided by client"
+              hint="Toggle on if the venue / client supplies the connection"
+              required
+              value={field.value}
+              onChange={field.onChange}
+            />
+          )}
+        />
+        {internetByClient ? (
+          <Field
+            label="Speed & type"
+            required
+            name="internetClientDetails"
+            hint="e.g. 100 Mbps fiber, dedicated SSID"
+          >
+            <input
+              className={inputClass}
+              {...register("internetClientDetails")}
+            />
+          </Field>
+        ) : (
+          <Field
+            label="4Brains arrangement"
+            required
+            name="internetFourBrainsArrangement"
+            hint="Dongle / hotspot / leased line, etc."
+          >
+            <input
+              className={inputClass}
+              {...register("internetFourBrainsArrangement")}
+            />
+          </Field>
+        )}
+      </div>
     </div>
   );
 }

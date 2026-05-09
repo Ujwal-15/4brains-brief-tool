@@ -29,12 +29,18 @@ yarn-error.log*
 .env
 .env*.local
 
-# prisma sqlite
-/prisma/*.db
-/prisma/*.db-journal
+# pre-Supabase SQLite snapshot kept locally as a rollback safety net.
+# Safe to delete once you trust the Supabase migration is final.
+/_sqlite_backup/
 
-# generated brief exports (dev only — prod must use object storage)
+# generated brief exports — pre-Supabase Storage migration. Folder is
+# now obsolete (PDFs live in Storage), kept here so any leftover local
+# exports never end up in git.
 /public/exports/
+
+# debug/test PDFs from scripts/* — never commit
+/brief-mockup.pdf
+/test-pdf-embed.pdf
 
 # vercel
 .vercel

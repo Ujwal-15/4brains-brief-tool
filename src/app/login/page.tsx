@@ -4,8 +4,9 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
+import { BackgroundBlobs } from "@/components/BackgroundBlobs";
 
 const schema = z.object({
   email: z.string().email("Enter a valid email"),
@@ -17,8 +18,16 @@ type FormValues = z.infer<typeof schema>;
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") || "/";
-  const [serverError, setServerError] = useState<string | null>(null);
+  const next = searchParams.get("next") || "/";
+  const reason = searchParams.get("reason");
+  const [serverError, setServerError] = useState<string | null>(
+    // If the middleware bounced a non-@4brains.in user back here, surface
+    // the reason so they're not staring at a blank login form wondering
+    // why their last sign-in didn't take.
+    reason === "domain"
+      ? "Only @4brains.in accounts can use this tool."
+      : null,
+  );
 
   const {
     register,
@@ -28,87 +37,127 @@ export default function LoginPage() {
 
   const onSubmit = async (values: FormValues) => {
     setServerError(null);
-    const res = await signIn("credentials", {
-      email: values.email,
-      password: values.password,
-      redirect: false,
-    });
-    if (res?.error) {
-      setServerError("Invalid email or password");
+
+    // Defense-in-depth — even before Supabase sees it, refuse non-domain
+    // emails so the user gets a clear message rather than the generic
+    // "Invalid login credentials" if they typo'd their address.
+    if (!values.email.toLowerCase().endsWith("@4brains.in")) {
+      setServerError("Sign in with your @4brains.in email.");
       return;
     }
-    router.push(callbackUrl);
+
+    const supabase = createSupabaseBrowserClient();
+    const { error } = await supabase.auth.signInWithPassword({
+      email: values.email,
+      password: values.password,
+    });
+    if (error) {
+      setServerError(
+        error.message === "Invalid login credentials"
+          ? "Invalid email or password"
+          : error.message,
+      );
+      return;
+    }
+    router.push(next);
     router.refresh();
   };
 
+  const inputClass =
+    "w-full rounded-lg border border-black/[0.08] bg-white px-3.5 py-2.5 text-[13.5px] text-ink outline-none transition-shadow placeholder:text-ink-soft/50 focus:border-primary/40 focus:ring-2 focus:ring-primary/15";
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-neutral-50 px-4">
-      <div className="w-full max-w-sm rounded-lg border border-neutral-200 bg-white p-8 shadow-sm">
-        <div className="mb-6 flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-accent" aria-hidden />
-          <span className="text-sm font-semibold tracking-tight">
-            4Brains Brief Tool
-          </span>
-        </div>
-
-        <h1 className="mb-1 text-xl font-semibold">Sign in</h1>
-        <p className="mb-6 text-sm text-neutral-500">
-          Use your 4Brains email and password.
-        </p>
-
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-          <div>
-            <label
-              htmlFor="email"
-              className="mb-1 block text-xs font-medium text-neutral-700"
+    <div className="flex min-h-screen items-center justify-center px-4">
+      <BackgroundBlobs />
+      <div className="relative w-full max-w-sm overflow-hidden rounded-hero bg-surface p-8 shadow-elevated sm:p-10">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 bg-primary-glow"
+        />
+        <div className="relative">
+          <div className="mb-7 flex items-center gap-2.5">
+            <span
+              aria-hidden
+              className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-primary to-support shadow-glow-primary"
             >
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              {...register("email")}
-              className="w-full rounded border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-            />
-            {errors.email && (
-              <p className="mt-1 text-xs text-red-600">{errors.email.message}</p>
-            )}
+              <span className="font-display text-[15px] italic leading-none text-white">
+                4
+              </span>
+            </span>
+            <span className="text-[13px] font-medium tracking-tight text-ink">
+              4Brains
+              <span className="ml-1.5 text-ink-soft">Brief Tool</span>
+            </span>
           </div>
 
-          <div>
-            <label
-              htmlFor="password"
-              className="mb-1 block text-xs font-medium text-neutral-700"
-            >
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              {...register("password")}
-              className="w-full rounded border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-            />
-            {errors.password && (
-              <p className="mt-1 text-xs text-red-600">
-                {errors.password.message}
-              </p>
-            )}
-          </div>
+          <div className="eyebrow mb-2">Welcome back</div>
+          <h1 className="h-display-sm mb-2 text-ink">
+            Sign <span className="italic text-primary">in.</span>
+          </h1>
+          <p className="mb-7 text-[13px] text-ink-soft">
+            Use your 4Brains email and password.
+          </p>
 
-          {serverError && (
-            <p className="text-xs text-red-600">{serverError}</p>
-          )}
-
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full rounded bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-60"
+          <form
+            onSubmit={handleSubmit(onSubmit)}
+            className="space-y-4"
+            noValidate
           >
-            {isSubmitting ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
+            <div>
+              <label
+                htmlFor="email"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-soft/80"
+              >
+                Email
+              </label>
+              <input
+                id="email"
+                type="email"
+                autoComplete="email"
+                {...register("email")}
+                className={inputClass}
+              />
+              {errors.email && (
+                <p className="mt-1.5 text-xs text-red-600">
+                  {errors.email.message}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label
+                htmlFor="password"
+                className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-soft/80"
+              >
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                autoComplete="current-password"
+                {...register("password")}
+                className={inputClass}
+              />
+              {errors.password && (
+                <p className="mt-1.5 text-xs text-red-600">
+                  {errors.password.message}
+                </p>
+              )}
+            </div>
+
+            {serverError && (
+              <p className="text-xs text-red-600">{serverError}</p>
+            )}
+
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="mt-1 w-full rounded-full bg-primary px-3 py-2.5 text-[13.5px] font-medium text-white shadow-glow-primary transition-all hover:-translate-y-px hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
+            >
+              {isSubmitting ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );

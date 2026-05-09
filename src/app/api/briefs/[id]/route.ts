@@ -1,39 +1,39 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { changeLogMessageForStatus, writeChangeLog } from "@/lib/briefData";
 
-const ALLOWED_STATUSES = ["DRAFT", "IN_REVIEW", "APPROVED", "ARCHIVED"];
+const ALLOWED_STATUSES = ["DRAFT", "FINAL", "ARCHIVED"] as const;
 
 export async function PATCH(
   req: Request,
   { params }: { params: { id: string } },
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const supabase = createSupabaseServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const existing = await prisma.brief.findUnique({
-    where: { id: params.id },
-    select: { id: true, status: true, createdById: true, pmId: true },
-  });
+  // RLS enforces that the caller can only see/update briefs they own,
+  // are PM on, or all of them if they're admin. A miss here means either
+  // truly not found OR forbidden — we return 404 in both cases so we
+  // don't leak existence to non-owners.
+  const { data: existing } = await supabase
+    .from("briefs")
+    .select("id")
+    .eq("id", params.id)
+    .maybeSingle();
   if (!existing) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const isOwner =
-    existing.createdById === session.user.id ||
-    existing.pmId === session.user.id;
-  if (!isOwner && session.user.role !== "ADMIN") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
+  // PM is now stored as a free-text name inside data jsonb (data.pmName), so
+  // no separate pmId field is accepted here.
   const body = (await req.json()) as {
     data?: unknown;
     status?: unknown;
-    pmId?: unknown;
   };
 
   const update: Record<string, unknown> = {};
@@ -43,18 +43,17 @@ export async function PATCH(
       return NextResponse.json({ error: "Invalid data" }, { status: 400 });
     }
     try {
-      JSON.parse(body.data);
+      update.data = JSON.parse(body.data);
     } catch {
       return NextResponse.json({ error: "Malformed JSON" }, { status: 400 });
     }
-    update.data = body.data;
   }
 
   let nextStatus: string | undefined;
   if (body.status !== undefined) {
     if (
       typeof body.status !== "string" ||
-      !ALLOWED_STATUSES.includes(body.status)
+      !ALLOWED_STATUSES.includes(body.status as (typeof ALLOWED_STATUSES)[number])
     ) {
       return NextResponse.json({ error: "Invalid status" }, { status: 400 });
     }
@@ -62,28 +61,33 @@ export async function PATCH(
     nextStatus = body.status;
   }
 
-  if (body.pmId !== undefined) {
-    if (body.pmId !== null && typeof body.pmId !== "string") {
-      return NextResponse.json({ error: "Invalid pmId" }, { status: 400 });
-    }
-    update.pmId = body.pmId || null;
+  const { data: brief, error } = await supabase
+    .from("briefs")
+    .update(update)
+    .eq("id", params.id)
+    .select("id, status, updated_at")
+    .single();
+
+  if (error || !brief) {
+    return NextResponse.json(
+      { error: error?.message ?? "Failed to update brief" },
+      { status: 500 },
+    );
   }
 
-  const brief = await prisma.brief.update({
-    where: { id: params.id },
-    data: update,
-    select: { id: true, status: true, updatedAt: true },
-  });
-
-  // Only log when the user explicitly transitioned status — auto-saves come
-  // through with `data` only and shouldn't pollute the audit trail.
+  // Only log when the user explicitly transitioned status — auto-saves
+  // come through with `data` only and shouldn't pollute the audit trail.
   if (nextStatus) {
     await writeChangeLog({
-      briefId: brief.id,
-      userId: session.user.id,
+      briefId: brief.id as string,
+      userId: user.id,
       message: changeLogMessageForStatus(nextStatus),
     });
   }
 
-  return NextResponse.json(brief);
+  return NextResponse.json({
+    id: brief.id,
+    status: brief.status,
+    updatedAt: brief.updated_at,
+  });
 }
