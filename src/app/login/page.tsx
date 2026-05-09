@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useState } from "react";
+import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -18,7 +19,7 @@ type FormValues = z.infer<typeof schema>;
 // Wrapping the form in <Suspense> is required by Next.js when a client
 // component reads useSearchParams() — without it the static-prerender
 // step at build time bails because params can only be resolved at request
-// time. The fallback is the same shell rendered server-side.
+// time.
 export default function LoginPage() {
   return (
     <Suspense fallback={<LoginShell />}>
@@ -41,9 +42,7 @@ function LoginForm() {
   const next = searchParams.get("next") || "/";
   const reason = searchParams.get("reason");
   const [serverError, setServerError] = useState<string | null>(
-    // If the middleware bounced a non-@4brains.in user back here, surface
-    // the reason so they're not staring at a blank login form wondering
-    // why their last sign-in didn't take.
+    // If middleware bounced a non-@4brains.in user back here, surface why.
     reason === "domain"
       ? "Only @4brains.in accounts can use this tool."
       : null,
@@ -58,9 +57,6 @@ function LoginForm() {
   const onSubmit = async (values: FormValues) => {
     setServerError(null);
 
-    // Defense-in-depth — even before Supabase sees it, refuse non-domain
-    // emails so the user gets a clear message rather than the generic
-    // "Invalid login credentials" if they typo'd their address.
     if (!values.email.toLowerCase().endsWith("@4brains.in")) {
       setServerError("Sign in with your @4brains.in email.");
       return;
@@ -83,11 +79,15 @@ function LoginForm() {
     router.refresh();
   };
 
+  // Auth card sits on a LIGHT cream surface in both themes, so eyebrow
+  // and meta text need a fixed dark color (text-ink-soft) — the global
+  // .eyebrow class flips to champagne in dark mode for navy chrome,
+  // which would be invisible on this light card.
   const inputClass =
     "w-full rounded-lg border border-black/[0.08] bg-white px-3.5 py-2.5 text-[13.5px] text-ink outline-none transition-shadow placeholder:text-ink-soft/50 focus:border-primary/40 focus:ring-2 focus:ring-primary/15";
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
+    <div className="flex min-h-screen items-center justify-center px-4 py-12">
       <BackgroundBlobs />
       <div className="relative w-full max-w-sm overflow-hidden rounded-hero bg-surface p-8 shadow-elevated sm:p-10">
         <div
@@ -110,12 +110,14 @@ function LoginForm() {
             </span>
           </div>
 
-          <div className="eyebrow mb-2">Welcome back</div>
+          <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-ink-soft">
+            Welcome back
+          </div>
           <h1 className="h-display-sm mb-2 text-ink">
             Sign <span className="italic text-primary">in.</span>
           </h1>
           <p className="mb-7 text-[13px] text-ink-soft">
-            Use your 4Brains email and password.
+            Use your @4brains.in email and password.
           </p>
 
           <form
@@ -134,6 +136,7 @@ function LoginForm() {
                 id="email"
                 type="email"
                 autoComplete="email"
+                placeholder="you@4brains.in"
                 {...register("email")}
                 className={inputClass}
               />
@@ -177,6 +180,16 @@ function LoginForm() {
               {isSubmitting ? "Signing in…" : "Sign in"}
             </button>
           </form>
+
+          <p className="mt-6 border-t border-black/[0.06] pt-5 text-center text-[12.5px] text-ink-soft">
+            New to the team?{" "}
+            <Link
+              href="/signup"
+              className="font-medium text-primary hover:underline"
+            >
+              Create an account
+            </Link>
+          </p>
         </div>
       </div>
     </div>

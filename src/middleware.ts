@@ -62,9 +62,9 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Skip /login, Next.js internals, and the favicon — everything else
-  // requires a session. (Note: we no longer exclude /exports because the
-  // route doesn't exist anymore — PDFs are served by /api/briefs/[id]/pdf
-  // which has its own auth check.)
-  matcher: ["/((?!login|_next/static|_next/image|favicon.ico).*)"],
+  // Skip /login, /signup, /auth (Supabase email-confirm callbacks), Next.js
+  // internals, and the favicon — everything else requires a session.
+  matcher: [
+    "/((?!login|signup|auth|_next/static|_next/image|favicon.ico).*)",
+  ],
 };
