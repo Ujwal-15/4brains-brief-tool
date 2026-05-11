@@ -181,14 +181,10 @@ function LoginForm() {
             </button>
           </form>
 
-          <p className="mt-6 border-t border-black/[0.06] pt-5 text-center text-[12.5px] text-ink-soft">
-            New to the team?{" "}
-            <Link
-              href="/signup"
-              className="font-medium text-primary hover:underline"
-            >
-              Create an account
-            </Link>
+          <p className="mt-6 border-t border-black/[0.06] pt-5 text-center text-[12px] leading-relaxed text-ink-soft">
+            Accounts are pre-created for the 4Brains team.
+            <br />
+            Ask Ujwal if you don’t have access yet.
           </p>
         </div>
       </div>
