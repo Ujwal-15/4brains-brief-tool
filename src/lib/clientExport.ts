@@ -105,68 +105,72 @@ function normalizeSvgForRaster(svg: string): {
   return { svg: s, width, height };
 }
 
+// Encode an SVG to a base64 data URL. Base64 is more reliable than
+// URL-encoding (encodeURIComponent) for SVG payloads with mixed unicode
+// + special characters. The `unescape(encodeURIComponent(...))` dance
+// makes btoa UTF-8 safe.
+function svgToBase64DataUrl(svg: string): string {
+  const utf8 = unescape(encodeURIComponent(svg));
+  return `data:image/svg+xml;base64,${btoa(utf8)}`;
+}
+
 async function svgToPngBlob(svg: string, scale = 2): Promise<Blob> {
   const { svg: normalized, width, height } = normalizeSvgForRaster(svg);
 
-  // Blob URL is more permissive than data URL for SVGs with computed
-  // styles or unusual encoded characters. createObjectURL gives the
-  // browser a real Blob with a proper MIME type instead of a data
-  // string that some browsers' SVG parsers refuse.
-  const blob = new Blob([normalized], {
-    type: "image/svg+xml;charset=utf-8",
+  // Data URL (not blob URL). Critical for canvas export:
+  //   - blob URLs: Chrome/Brave treat SVG-via-blob as cross-origin
+  //     in some cases, tainting the canvas → toBlob() throws
+  //     SecurityError. Even setting img.crossOrigin doesn't help
+  //     because blob URLs don't go through the CORS check.
+  //   - data URLs: origin-less, never taint the canvas.
+  //
+  // Earlier data URLs failed with "image failed to load" — that was
+  // really about floats + <style> blocks in the SVG, both of which
+  // we strip in normalizeSvgForRaster.
+  const dataUrl = svgToBase64DataUrl(normalized);
+
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[svgToPng] <img> failed to load SVG (${width}x${height}). Normalized SVG (first 1000 chars):\n` +
+          normalized.slice(0, 1000),
+      );
+      reject(new Error(`SVG image failed to load (${width}x${height})`));
+    };
+    img.src = dataUrl;
   });
-  const url = URL.createObjectURL(blob);
 
-  try {
-    const img = new Image();
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => {
-        // Surface the normalized SVG so we can see exactly what the
-        // browser refused to load.
-        // eslint-disable-next-line no-console
-        console.error(
-          `[svgToPng] <img> failed to load SVG (${width}x${height}). Normalized SVG (first 1000 chars):\n` +
-            normalized.slice(0, 1000),
-        );
-        reject(
-          new Error(`SVG image failed to load (${width}x${height})`),
-        );
-      };
-      img.src = url;
-    });
-
-    if (typeof img.decode === "function") {
-      try {
-        await img.decode();
-      } catch {
-        // some old browsers reject decode but img is still drawable
-      }
+  if (typeof img.decode === "function") {
+    try {
+      await img.decode();
+    } catch {
+      // some old browsers reject decode but img is still drawable
     }
-
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(width * scale);
-    canvas.height = Math.round(height * scale);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Canvas 2D context unavailable");
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-    return await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((b) => {
-        if (b && b.size > 0) resolve(b);
-        else
-          reject(
-            new Error(
-              `Canvas toBlob produced empty PNG (${canvas.width}x${canvas.height})`,
-            ),
-          );
-      }, "image/png");
-    });
-  } finally {
-    URL.revokeObjectURL(url);
   }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((b) => {
+      if (b && b.size > 0) resolve(b);
+      else
+        reject(
+          new Error(
+            `Canvas toBlob produced empty PNG (${canvas.width}x${canvas.height})`,
+          ),
+        );
+    }, "image/png");
+  });
 }
 
 export async function buildFlowchartPng(
