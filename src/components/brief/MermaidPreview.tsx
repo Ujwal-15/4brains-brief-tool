@@ -172,14 +172,17 @@ export function MermaidPreview({
         <>
           <div ref={ref} className="flex justify-center [&_svg]:max-w-full" />
           {ready && (
-            <div className="mt-3 flex justify-end">
+            <div className="mt-4 flex justify-end border-t border-ink-on-page/10 pt-3">
               <button
                 type="button"
                 onClick={handleDownloadPng}
                 disabled={busy}
-                className="rounded-full border border-ink-on-page/15 bg-white px-3 py-1.5 text-[12px] font-medium text-ink-on-page/80 transition-colors hover:bg-ink-on-page/5 hover:text-ink-on-page disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-[12.5px] font-semibold text-white shadow-glow-primary transition-transform hover:-translate-y-px disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {busy ? "Preparing…" : "⤓ Download flowchart (PNG)"}
+                <span aria-hidden className="text-[14px] leading-none">⤓</span>
+                <span>
+                  {busy ? "Preparing…" : "Download flowchart (PNG)"}
+                </span>
               </button>
             </div>
           )}
