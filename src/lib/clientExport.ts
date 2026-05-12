@@ -9,17 +9,26 @@ import { generateFlowchart } from "./flowchart";
 // rasterization step. Specifically:
 //   - `classDef foo fill:#xxx,...`  declarations
 //   - `:::foo`                      class-assignment suffix on nodes
-// These render cleanly in Mermaid's own inline preview but produce SVGs
-// with computed styles (background-rects + child shapes) that the
-// `<img>` element rasterizes inconsistently across browsers — some draw
-// black boxes, some skip the fills entirely. Stripping them gives us
-// plain rectangles + diamonds + arrows that always rasterize the same.
-// Visual loss is purely color theming; the structure is identical.
+//   - `\n` inside quoted labels     forces line breaks via <tspan>,
+//                                   which positions inconsistently in
+//                                   the rasterized canvas
+// All three render fine in Mermaid's own preview but break our
+// browser-side <img>→canvas→PNG path in ways that vary by browser. The
+// seeded briefs use plain single-line nodes and rasterize reliably; this
+// function converts everything to that shape.
+// Visual loss is colour theming + multi-line labels — structure is identical.
 export function sanitizeMermaidForRender(src: string): string {
   return src
     .split("\n")
     .filter((line) => !line.trim().startsWith("classDef"))
-    .map((line) => line.replace(/:::[A-Za-z_][A-Za-z0-9_-]*/g, ""))
+    .map((line) =>
+      line
+        .replace(/:::[A-Za-z_][A-Za-z0-9_-]*/g, "")
+        // Match a literal "\n" (backslash + n) inside the source string —
+        // Mermaid treats this as a label line break. Replace with a
+        // separator so the label stays on one line.
+        .replace(/\\n/g, " — "),
+    )
     .join("\n");
 }
 

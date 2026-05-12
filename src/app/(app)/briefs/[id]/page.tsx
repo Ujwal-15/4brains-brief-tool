@@ -113,8 +113,15 @@ export default async function BriefDetailPage({
   );
 
   const data = parseBriefData(brief.data);
-  const csName = nameById.get(brief.created_by_id) || "";
-  const pmName = brief.pm_id ? (nameById.get(brief.pm_id) ?? null) : null;
+  // Prefer the names CS typed in Section 1 ("CS/BD Owner from 4Brains"
+  // and "PM Assigned"). Fall back to the auth-account-derived name only
+  // if those fields are empty. The form fields capture project-level
+  // assignment (e.g. Rakesh + Shashank), independent of who happens to
+  // have the brief tab open.
+  const creatorAuthName = nameById.get(brief.created_by_id) || "";
+  const pmAuthName = brief.pm_id ? (nameById.get(brief.pm_id) ?? null) : null;
+  const csName = (data.csbdOwner || "").trim() || creatorAuthName;
+  const pmName = (data.pmName || "").trim() || pmAuthName;
 
   const sections = renderSectionsForExport(data, {
     csName,
