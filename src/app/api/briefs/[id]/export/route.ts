@@ -10,31 +10,16 @@ import { renderSectionsForExport } from "@/lib/exportSections";
 import { BriefPdfDocument } from "@/lib/exportPdf";
 import { uploadPdf } from "@/lib/storage";
 
-// Bundled font for resvg. Inter ships via @fontsource/inter and is
-// force-included in the lambda bundle by next.config.mjs. resvg-js takes
-// font *paths* (not buffers), so we just compute them once and pass to
-// every render call.
+// Bundled font for resvg. Copied to /public/fonts at build time —
+// Vercel reliably includes /public in the lambda bundle, while the
+// outputFileTracingIncludes approach for node_modules paths was flaky
+// in practice. Fonts live in git so deployment is deterministic.
 async function getFontFilePaths(): Promise<string[]> {
   const root = process.cwd();
   const paths = [
-    path.join(
-      root,
-      "node_modules",
-      "@fontsource",
-      "inter",
-      "files",
-      "inter-latin-400-normal.woff2",
-    ),
-    path.join(
-      root,
-      "node_modules",
-      "@fontsource",
-      "inter",
-      "files",
-      "inter-latin-700-normal.woff2",
-    ),
+    path.join(root, "public", "fonts", "Inter-Regular.woff2"),
+    path.join(root, "public", "fonts", "Inter-Bold.woff2"),
   ];
-  // Verify each exists; resvg throws on missing files.
   const usable: string[] = [];
   for (const p of paths) {
     try {
@@ -44,6 +29,9 @@ async function getFontFilePaths(): Promise<string[]> {
       console.warn(`[font] not found: ${p}`, err);
     }
   }
+  console.log(
+    `[font] loaded ${usable.length}/${paths.length} font files for resvg`,
+  );
   return usable;
 }
 
