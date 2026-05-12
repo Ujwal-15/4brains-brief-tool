@@ -10,40 +10,76 @@ import { uploadPdf } from "@/lib/storage";
 
 // Render an SVG string to a PNG buffer using @resvg/resvg-js.
 //
-// Pre-processes the Mermaid SVG to remove features resvg can't handle:
-//   - <style> blocks: resvg has limited CSS support, Mermaid's theme CSS
-//     can crash the parser
-//   - <foreignObject>: HTML inside SVG, only renders in real browsers
-// Then inlines basic fill/stroke attributes so default colours look right.
-// Falls back to a heuristic-only render if resvg throws.
+// Pre-processes the Mermaid SVG to remove features resvg can't handle
+// (<style>, <foreignObject>), then inlines basic fill/stroke attributes
+// so default colours look right.
 function svgToPng(svg: string): { png: Buffer | null; reason?: string } {
   // 1. Strip features resvg chokes on
   const cleaned = svg
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
     .replace(/<foreignObject[^>]*>[\s\S]*?<\/foreignObject>/gi, "");
 
-  // 2. Inline default fills/strokes so plain shapes paint visibly when
-  //    there's no CSS to colour them. This is a string-level pass — fast
-  //    and doesn't need a DOM. Order matters: only inject when no
-  //    fill/stroke is already present on the element.
-  const inlined = cleaned
-    .replace(/<rect\b(?![^>]*\bfill=)/gi, '<rect fill="#ffffff" stroke="#333333" stroke-width="1.2"')
-    .replace(/<polygon\b(?![^>]*\bfill=)/gi, '<polygon fill="#ffffff" stroke="#333333" stroke-width="1.2"')
-    .replace(/<circle\b(?![^>]*\bfill=)/gi, '<circle fill="#ffffff" stroke="#333333" stroke-width="1.2"')
-    .replace(/<text\b(?![^>]*\bfill=)/gi, '<text fill="#111111" font-family="Arial, sans-serif" font-size="14"')
+  // 2. Pass 1: scope-aware fix for elements inside <marker>...
+  //    Marker arrows must be SOLID-filled triangles (the default <path>
+  //    fill="black" works, but we make it explicit for safety). Doing
+  //    this FIRST so the catch-all `<path>` pass below doesn't overwrite
+  //    them — the (?![^>]*\bfill=) lookahead skips already-filled tags.
+  let inlined = cleaned.replace(
+    /<marker\b[^>]*>([\s\S]*?)<\/marker>/gi,
+    (full, inner: string) => {
+      const fixedInner = inner
+        .replace(
+          /<path\b(?![^>]*\bfill=)/gi,
+          '<path fill="#333333" stroke="#333333"',
+        )
+        .replace(
+          /<polygon\b(?![^>]*\bfill=)/gi,
+          '<polygon fill="#333333" stroke="#333333"',
+        );
+      return full.replace(inner, fixedInner);
+    },
+  );
+
+  // 3. Pass 2: catch-all defaults for the rest of the SVG.
+  //    Edge paths get fill="none" + stroke="#333" — without this, SVG's
+  //    default <path> fill is BLACK, which paints the curve regions
+  //    solid (the "tear-drop blobs" we saw before).
+  //    Node shapes get white fill + dark border.
+  //    Text gets dark fill + a font-family the bundled font can match.
+  inlined = inlined
+    .replace(
+      /<path\b(?![^>]*\bfill=)/gi,
+      '<path fill="none" stroke="#333333" stroke-width="1.5"',
+    )
+    .replace(
+      /<rect\b(?![^>]*\bfill=)/gi,
+      '<rect fill="#ffffff" stroke="#333333" stroke-width="1.2"',
+    )
+    .replace(
+      /<polygon\b(?![^>]*\bfill=)/gi,
+      '<polygon fill="#ffffff" stroke="#333333" stroke-width="1.2"',
+    )
+    .replace(
+      /<circle\b(?![^>]*\bfill=)/gi,
+      '<circle fill="#ffffff" stroke="#333333" stroke-width="1.2"',
+    )
+    .replace(
+      /<text\b(?![^>]*\bfill=)/gi,
+      '<text fill="#111111" font-family="DejaVu Sans, sans-serif" font-size="14"',
+    )
     .replace(/<tspan\b(?![^>]*\bfill=)/gi, '<tspan fill="#111111"');
 
-  // 3. Render
+  // 4. Render. loadSystemFonts MUST be true on Vercel — resvg ships
+  //    NO bundled font, so without system fonts text won't render at
+  //    all (which is what we saw in the previous attempt). Linux on
+  //    Vercel reliably has DejaVu Sans.
   try {
     const resvg = new Resvg(inlined, {
       fitTo: { mode: "width", value: 1400 },
       background: "rgba(255,255,255,1)",
       font: {
-        // Don't try to load system fonts — on Vercel's lambda there
-        // usually aren't any usable ones. resvg-js ships its own default
-        // font that handles the basic ASCII we need.
-        loadSystemFonts: false,
-        defaultFontFamily: "Arial",
+        loadSystemFonts: true,
+        defaultFontFamily: "DejaVu Sans",
       },
       logLevel: "warn",
     });
