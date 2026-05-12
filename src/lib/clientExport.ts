@@ -1,23 +1,24 @@
 // Client-side helpers for exporting a brief.
 //
-// Mermaid is browser-only — we render the diagram in the browser, draw the SVG
-// to a canvas, and ship a PNG to the server.
+// Two-step flow:
+//   1. We render Mermaid → SVG in the BROWSER (Mermaid is browser-only).
+//      The SVG string is what Mermaid produces — we don't do canvas
+//      rasterization here. We tried; canvas in the browser was a
+//      bottomless rabbit hole of CORS/taint/style/parser quirks.
+//   2. We ship the SVG STRING to the server in the export multipart
+//      payload. The server (Vercel function) rasterizes SVG→PNG via
+//      @resvg/resvg-js (pure-JS port of resvg, no native deps), then
+//      embeds the PNG in the final PDF.
+//
+// Everything related to <img>/canvas/dataURL/DOMParser is gone. Server-side
+// SVG rendering with resvg is deterministic and immune to browser flakes.
 
 import { generateFlowchart } from "./flowchart";
 
-// Strip Mermaid features that break our SVG-to-canvas rasterization:
-//   - `classDef foo fill:#xxx,...`  declarations (CSS rules in <style>)
-//   - `:::foo`                      class-assignment suffix on nodes
-//
-// These add CSS-based styling to the SVG which our <img> + canvas path
-// can't honour (we strip <style> blocks during normalize). Stripping them
-// here gives Mermaid plain rect/diamond/text/edge output that we re-style
-// with inline fill attributes during normalizeSvgForRaster.
-//
-// We INTENTIONALLY keep `\n` line breaks inside labels — Mermaid handles
-// them natively and sizes node heights to fit multi-line text. Removing
-// them produced single-line text that Mermaid then word-wrapped visually
-// without growing the box, causing the wrapped second line to clip.
+// Strip Mermaid features that the resvg server-side renderer doesn't honour
+// (it doesn't run a CSS engine for theme classes). Mermaid's plain node
+// rect/diamond/text output works fine; classDef + :::class CSS theming
+// wouldn't apply anyway.
 export function sanitizeMermaidForRender(src: string): string {
   return src
     .split("\n")
@@ -26,9 +27,10 @@ export function sanitizeMermaidForRender(src: string): string {
     .join("\n");
 }
 
+// Render Mermaid source → SVG string. Browser-only; the page already
+// dynamic-imports mermaid in MermaidPreview.tsx so the bundle is warm.
 async function renderMermaidSvg(source: string): Promise<string> {
   const mermaid = (await import("mermaid")).default;
-  // Initialize is idempotent within a single page.
   mermaid.initialize({
     startOnLoad: false,
     theme: "neutral",
@@ -41,219 +43,19 @@ async function renderMermaidSvg(source: string): Promise<string> {
   return svg;
 }
 
-// Normalises a Mermaid-output SVG so canvas rasterization actually works
-// AND the rendered output is readable (white nodes, dark text, dark arrows).
+// Build one Mermaid SVG string per activity. Prefers the LLM-generated
+// `aiFlowchart` (set by the Suggest button) so the exported chart matches
+// what CS sees on screen; falls back to the keyword classifier rendering
+// of the typed journey text when the LLM spec isn't there.
 //
-// Failure modes we defend against (all observed in the wild):
-//   1. Mermaid emits `width="100%"`. <img> reports naturalWidth=0 and
-//      drawImage draws nothing → empty PNG.
-//   2. SVGs without an explicit xmlns fail to decode in some browsers.
-//   3. Mermaid inlines a `<style>` block. Some browsers refuse to load
-//      <img src=...> SVGs that have <style> with font-family refs, throwing
-//      [object Event] from onerror. We strip the block.
-//   4. After stripping styles, default browser rendering paints rects and
-//      text in BLACK (the SVG default fill), so the user sees black-on-black
-//      boxes. We push fill/stroke/color attributes inline onto each shape
-//      and text element so the colour comes from attributes, not CSS.
-//   5. Mermaid's auto-computed dimensions are floats (572.265625). Some
-//      browsers stumble on fractional <svg> width/height. We round.
-function normalizeSvgForRaster(svg: string): {
-  svg: string;
-  width: number;
-  height: number;
-} {
-  // Parse via <template> — uses the lenient HTML parser, which accepts
-  // unclosed void tags (<br>, <hr>) and other HTML-isms that Mermaid's
-  // SVG output sometimes contains. DOMParser with "image/svg+xml" is
-  // strict XML and bails with a <parsererror> on any HTML quirk.
-  //
-  // Belt-and-suspenders: also self-close common void HTML tags before
-  // parsing in case there's any other XML strictness in the chain.
-  const xmlSafe = svg
-    .replace(/<br\s*>/gi, "<br/>")
-    .replace(/<hr\s*>/gi, "<hr/>")
-    .replace(/<img([^>]*?)(?<!\/)>/gi, "<img$1/>");
-
-  const template = document.createElement("template");
-  template.innerHTML = xmlSafe;
-  const svgEl = template.content.querySelector(
-    "svg",
-  ) as SVGSVGElement | null;
-  if (!svgEl) {
-    // Parse couldn't find an <svg>. Return the input unchanged so the
-    // <img> step surfaces a real error if the source was junk.
-    return { svg: xmlSafe, width: 800, height: 600 };
-  }
-
-  // 1. xmlns
-  if (!svgEl.getAttribute("xmlns")) {
-    svgEl.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  }
-
-  // 2. Compute integer dimensions from viewBox
-  const viewBox = svgEl.getAttribute("viewBox") || "";
-  const vbParts = viewBox.split(/\s+/).map(Number);
-  const width =
-    vbParts.length >= 4 && Number.isFinite(vbParts[2])
-      ? Math.max(Math.round(vbParts[2]), 100)
-      : 800;
-  const height =
-    vbParts.length >= 4 && Number.isFinite(vbParts[3])
-      ? Math.max(Math.round(vbParts[3]), 100)
-      : 600;
-
-  // 3. Explicit width/height (override any "100%")
-  svgEl.setAttribute("width", String(width));
-  svgEl.setAttribute("height", String(height));
-
-  // 4. Strip all <style> blocks
-  svgEl.querySelectorAll("style").forEach((el) => el.remove());
-
-  // 5. Inline default colours so the rasterized canvas is readable.
-
-  // Node shapes (rectangles, diamonds, etc.) — white fill, dark border
-  const NODE_SHAPE_SEL =
-    ".node rect, .node polygon, .node circle, .node ellipse, .nodes rect, .nodes polygon, .nodes circle, .nodes ellipse, .basic.label-container, .label-container";
-  svgEl.querySelectorAll(NODE_SHAPE_SEL).forEach((el) => {
-    if (!el.getAttribute("fill") || el.getAttribute("fill") === "none") {
-      el.setAttribute("fill", "#ffffff");
-    }
-    if (!el.getAttribute("stroke")) el.setAttribute("stroke", "#333333");
-    if (!el.getAttribute("stroke-width")) {
-      el.setAttribute("stroke-width", "1.2");
-    }
-  });
-
-  // Edge label backgrounds — white so labels are readable
-  svgEl
-    .querySelectorAll(".edgeLabel rect, .label rect")
-    .forEach((el) => {
-      if (!el.getAttribute("fill")) el.setAttribute("fill", "#ffffff");
-    });
-
-  // All text — dark fill, sans-serif (avoid missing-font issues)
-  svgEl.querySelectorAll("text, tspan").forEach((el) => {
-    if (!el.getAttribute("fill")) el.setAttribute("fill", "#111111");
-    if (el.tagName.toLowerCase() === "text") {
-      if (!el.getAttribute("font-family")) {
-        el.setAttribute("font-family", "Arial, Helvetica, sans-serif");
-      }
-    }
-  });
-
-  // Edge paths (the lines connecting nodes) — dark stroke, no fill
-  svgEl
-    .querySelectorAll(".edgePath path, .edgePaths path, path.path")
-    .forEach((el) => {
-      if (!el.getAttribute("stroke")) el.setAttribute("stroke", "#333333");
-      if (!el.getAttribute("stroke-width")) {
-        el.setAttribute("stroke-width", "1.5");
-      }
-      if (!el.getAttribute("fill")) el.setAttribute("fill", "none");
-    });
-
-  // Arrowhead markers — DARK fill so arrows are visible
-  svgEl.querySelectorAll("marker path, marker polygon").forEach((el) => {
-    el.setAttribute("fill", "#333333");
-    el.setAttribute("stroke", "#333333");
-  });
-
-  // Serialize back. outerHTML uses the HTML serializer which is the
-  // counterpart to the HTML parser we used above — round-trips cleanly
-  // and produces something <img> reliably loads.
-  return { svg: svgEl.outerHTML, width, height };
-}
-
-// Encode an SVG to a base64 data URL. Base64 is more reliable than
-// URL-encoding (encodeURIComponent) for SVG payloads with mixed unicode
-// + special characters. The `unescape(encodeURIComponent(...))` dance
-// makes btoa UTF-8 safe.
-function svgToBase64DataUrl(svg: string): string {
-  const utf8 = unescape(encodeURIComponent(svg));
-  return `data:image/svg+xml;base64,${btoa(utf8)}`;
-}
-
-async function svgToPngBlob(svg: string, scale = 2): Promise<Blob> {
-  const { svg: normalized, width, height } = normalizeSvgForRaster(svg);
-
-  // Data URL (not blob URL). Critical for canvas export:
-  //   - blob URLs: Chrome/Brave treat SVG-via-blob as cross-origin
-  //     in some cases, tainting the canvas → toBlob() throws
-  //     SecurityError. Even setting img.crossOrigin doesn't help
-  //     because blob URLs don't go through the CORS check.
-  //   - data URLs: origin-less, never taint the canvas.
-  //
-  // Earlier data URLs failed with "image failed to load" — that was
-  // really about floats + <style> blocks in the SVG, both of which
-  // we strip in normalizeSvgForRaster.
-  const dataUrl = svgToBase64DataUrl(normalized);
-
-  const img = new Image();
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => {
-      // eslint-disable-next-line no-console
-      console.error(
-        `[svgToPng] <img> failed to load SVG (${width}x${height}). Normalized SVG (first 1000 chars):\n` +
-          normalized.slice(0, 1000),
-      );
-      reject(new Error(`SVG image failed to load (${width}x${height})`));
-    };
-    img.src = dataUrl;
-  });
-
-  if (typeof img.decode === "function") {
-    try {
-      await img.decode();
-    } catch {
-      // some old browsers reject decode but img is still drawable
-    }
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(width * scale);
-  canvas.height = Math.round(height * scale);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2D context unavailable");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((b) => {
-      if (b && b.size > 0) resolve(b);
-      else
-        reject(
-          new Error(
-            `Canvas toBlob produced empty PNG (${canvas.width}x${canvas.height})`,
-          ),
-        );
-    }, "image/png");
-  });
-}
-
-export async function buildFlowchartPng(
-  userJourney: string,
-): Promise<Blob | null> {
-  const source = generateFlowchart(userJourney);
-  if (!source) return null;
-  const svg = await renderMermaidSvg(source);
-  return svgToPngBlob(svg);
-}
-
-// Build one PNG per activity. Prefers the LLM-generated Mermaid spec
-// (set by the Suggest button) so the exported chart matches what CS sees
-// on screen. Falls back to the keyword classifier rendering of the typed
-// journey text when the LLM spec isn't there.
-//
-// Logs each step so the user / dev can see exactly which activities
-// produced PNGs and which failed (and why) in the browser console.
-export async function buildFlowchartPngsForActivities(
+// Returns a Map<activityIndex, svgString>. The export route will send
+// each SVG string to the server which renders it to PNG via resvg.
+export async function buildFlowchartSvgsForActivities(
   activities: Array<{ userJourney: string; aiFlowchart?: string }>,
-): Promise<Map<number, Blob>> {
-  const out = new Map<number, Blob>();
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
   console.groupCollapsed(
-    `[export] rendering ${activities.length} activity flowcharts`,
+    `[export] rendering ${activities.length} activity flowcharts (SVG only)`,
   );
   for (let i = 0; i < activities.length; i++) {
     const a = activities[i];
@@ -263,27 +65,30 @@ export async function buildFlowchartPngsForActivities(
     const source = llmSpec || generateFlowchart(a.userJourney ?? "");
     const sourceKind = llmSpec ? "aiFlowchart" : "keyword-fallback";
     if (!source) {
-      console.warn(`  Activity ${i + 1}: no source (empty journey + no AI spec) — skip`);
+      console.warn(
+        `  Activity ${i + 1}: no source (empty journey + no AI spec) — skip`,
+      );
       continue;
     }
 
     try {
       const svg = await renderMermaidSvg(source);
-      const png = await svgToPngBlob(svg);
-      out.set(i + 1, png);
+      out.set(i + 1, svg);
       console.log(
-        `  ✓ Activity ${i + 1} (${sourceKind}) → PNG ${png.size} bytes`,
+        `  ✓ Activity ${i + 1} (${sourceKind}) → SVG ${svg.length} chars`,
       );
     } catch (err) {
       console.error(
-        `  ✗ Activity ${i + 1} (${sourceKind}) FAILED:`,
+        `  ✗ Activity ${i + 1} (${sourceKind}) Mermaid render FAILED:`,
         err,
         "\n    source:",
         source,
       );
     }
   }
-  console.log(`[export] generated ${out.size}/${activities.length} flowchart PNGs`);
+  console.log(
+    `[export] generated ${out.size}/${activities.length} flowchart SVGs (server will rasterize)`,
+  );
   console.groupEnd();
   return out;
 }
@@ -291,20 +96,21 @@ export async function buildFlowchartPngsForActivities(
 export type ExportResult = {
   pdfUrl: string;
   pdfName: string;
-  // Number of activity flowcharts embedded in the PDF (purely informational).
   flowchartCount: number;
 };
 
+// Ship the multipart payload to the export route. The server expects
+// "flowchart_svg_<idx>" string fields and rasterizes them.
 export async function postExport(
   briefId: string,
-  flowcharts: Map<number, Blob>,
+  flowcharts: Map<number, string>,
 ): Promise<
   | { ok: true; data: ExportResult }
   | { ok: false; status: number; error: string; missing?: unknown[] }
 > {
   const fd = new FormData();
-  Array.from(flowcharts.entries()).forEach(([idx, png]) => {
-    fd.append(`flowchart_${idx}`, png, `activity_${idx}.png`);
+  Array.from(flowcharts.entries()).forEach(([idx, svg]) => {
+    fd.append(`flowchart_svg_${idx}`, svg);
   });
 
   const res = await fetch(`/api/briefs/${briefId}/export`, {
@@ -331,9 +137,8 @@ export async function postExport(
   return { ok: true, data };
 }
 
-// Triggers a same-window download. Avoids target="_blank" because some
-// browsers treat that as a popup and block it; with `download` attribute
-// only, the file goes straight to disk.
+// Triggers a same-window download. Avoids target="_blank" so popup
+// blockers don't kill the file-save dialog.
 export function triggerDownload(url: string, filename?: string) {
   const a = document.createElement("a");
   a.href = url;

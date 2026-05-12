@@ -1,11 +1,37 @@
 import { NextResponse } from "next/server";
 import { renderToBuffer } from "@react-pdf/renderer";
+import { Resvg } from "@resvg/resvg-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getMissingRequiredFields } from "@/lib/briefSchema";
 import { parseBriefData, writeChangeLog } from "@/lib/briefData";
 import { renderSectionsForExport } from "@/lib/exportSections";
 import { BriefPdfDocument } from "@/lib/exportPdf";
 import { uploadPdf } from "@/lib/storage";
+
+// Render an SVG string to a PNG buffer using @resvg/resvg-js. resvg is
+// a pure-Rust SVG renderer; resvg-js binds it via N-API (with WASM
+// fallback). No browser, no canvas, no taint — deterministic output.
+function svgToPng(svg: string): Buffer | null {
+  try {
+    const resvg = new Resvg(svg, {
+      // Scale up so the embedded image is crisp at PDF print resolution.
+      fitTo: { mode: "width", value: 1400 },
+      background: "rgba(255,255,255,1)",
+      font: {
+        // Resvg can't fetch fonts; fall back to the closest system font
+        // available in the Vercel runtime. Helvetica is bundled with PDFKit
+        // and Linux has DejaVu. Setting loadSystemFonts handles both.
+        loadSystemFonts: true,
+        defaultFontFamily: "Helvetica",
+      },
+    });
+    const png = resvg.render().asPng();
+    return Buffer.from(png);
+  } catch (err) {
+    console.error("[svgToPng] resvg render failed:", err);
+    return null;
+  }
+}
 
 // Force Node runtime — @react-pdf/renderer isn't Edge-compatible.
 export const runtime = "nodejs";
@@ -76,18 +102,32 @@ export async function POST(
     );
   }
 
-  // Multi-activity flowchart upload: form fields named "flowchart_<idx>"
-  // where <idx> is 1-based.
+  // Multi-activity flowchart upload. Client now sends SVG text under
+  // "flowchart_svg_<idx>" fields. We rasterize each SVG to PNG here
+  // using @resvg/resvg-js so the final PDF embeds a real image.
+  // (Legacy "flowchart_<idx>" PNG-blob path is still accepted for
+  // backwards compatibility but new exports use SVG.)
   const activityFlowcharts: Record<number, Buffer> = {};
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.startsWith("multipart/form-data")) {
     const form = await req.formData();
     const entries = Array.from(form.entries());
     for (const [key, value] of entries) {
-      const m = key.match(/^flowchart_(\d+)$/);
-      if (!m) continue;
-      const idx = Number(m[1]);
-      if (value instanceof Blob && value.size > 0) {
+      const svgMatch = key.match(/^flowchart_svg_(\d+)$/);
+      if (svgMatch) {
+        const idx = Number(svgMatch[1]);
+        const svgString = typeof value === "string" ? value : "";
+        if (svgString.length > 0) {
+          const png = svgToPng(svgString);
+          if (png) {
+            activityFlowcharts[idx] = png;
+          }
+        }
+        continue;
+      }
+      const pngMatch = key.match(/^flowchart_(\d+)$/);
+      if (pngMatch && value instanceof Blob && value.size > 0) {
+        const idx = Number(pngMatch[1]);
         activityFlowcharts[idx] = Buffer.from(await value.arrayBuffer());
       }
     }

@@ -17,7 +17,7 @@ import {
   isSection6Complete,
 } from "@/lib/briefSchema";
 import {
-  buildFlowchartPngsForActivities,
+  buildFlowchartSvgsForActivities,
   postExport,
   triggerDownload,
 } from "@/lib/clientExport";
@@ -240,11 +240,13 @@ export function BriefForm({
     setSavedAt(new Date());
     setSaveState("idle");
 
-    // Render one flowchart PNG per activity (skipping any with no journey).
-    // These get embedded inline inside the PDF below — single-file output.
-    let flowcharts: Map<number, Blob> = new Map();
+    // Build one Mermaid SVG string per activity in the browser, then ship
+    // them to the server which rasterizes via resvg and embeds in the PDF.
+    // (We deliberately do NOT canvas-rasterize in the browser — that path
+    // was a bottomless rabbit hole of taint/parser/style quirks.)
+    let flowcharts: Map<number, string> = new Map();
     try {
-      flowcharts = await buildFlowchartPngsForActivities(v.activities);
+      flowcharts = await buildFlowchartSvgsForActivities(v.activities);
     } catch (err) {
       console.warn("Flowchart render failed, exporting PDF without charts", err);
     }
