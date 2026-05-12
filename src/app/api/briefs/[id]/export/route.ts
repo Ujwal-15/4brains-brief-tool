@@ -8,28 +8,52 @@ import { renderSectionsForExport } from "@/lib/exportSections";
 import { BriefPdfDocument } from "@/lib/exportPdf";
 import { uploadPdf } from "@/lib/storage";
 
-// Render an SVG string to a PNG buffer using @resvg/resvg-js. resvg is
-// a pure-Rust SVG renderer; resvg-js binds it via N-API (with WASM
-// fallback). No browser, no canvas, no taint — deterministic output.
-function svgToPng(svg: string): Buffer | null {
+// Render an SVG string to a PNG buffer using @resvg/resvg-js.
+//
+// Pre-processes the Mermaid SVG to remove features resvg can't handle:
+//   - <style> blocks: resvg has limited CSS support, Mermaid's theme CSS
+//     can crash the parser
+//   - <foreignObject>: HTML inside SVG, only renders in real browsers
+// Then inlines basic fill/stroke attributes so default colours look right.
+// Falls back to a heuristic-only render if resvg throws.
+function svgToPng(svg: string): { png: Buffer | null; reason?: string } {
+  // 1. Strip features resvg chokes on
+  const cleaned = svg
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<foreignObject[^>]*>[\s\S]*?<\/foreignObject>/gi, "");
+
+  // 2. Inline default fills/strokes so plain shapes paint visibly when
+  //    there's no CSS to colour them. This is a string-level pass — fast
+  //    and doesn't need a DOM. Order matters: only inject when no
+  //    fill/stroke is already present on the element.
+  const inlined = cleaned
+    .replace(/<rect\b(?![^>]*\bfill=)/gi, '<rect fill="#ffffff" stroke="#333333" stroke-width="1.2"')
+    .replace(/<polygon\b(?![^>]*\bfill=)/gi, '<polygon fill="#ffffff" stroke="#333333" stroke-width="1.2"')
+    .replace(/<circle\b(?![^>]*\bfill=)/gi, '<circle fill="#ffffff" stroke="#333333" stroke-width="1.2"')
+    .replace(/<text\b(?![^>]*\bfill=)/gi, '<text fill="#111111" font-family="Arial, sans-serif" font-size="14"')
+    .replace(/<tspan\b(?![^>]*\bfill=)/gi, '<tspan fill="#111111"');
+
+  // 3. Render
   try {
-    const resvg = new Resvg(svg, {
-      // Scale up so the embedded image is crisp at PDF print resolution.
+    const resvg = new Resvg(inlined, {
       fitTo: { mode: "width", value: 1400 },
       background: "rgba(255,255,255,1)",
       font: {
-        // Resvg can't fetch fonts; fall back to the closest system font
-        // available in the Vercel runtime. Helvetica is bundled with PDFKit
-        // and Linux has DejaVu. Setting loadSystemFonts handles both.
-        loadSystemFonts: true,
-        defaultFontFamily: "Helvetica",
+        // Don't try to load system fonts — on Vercel's lambda there
+        // usually aren't any usable ones. resvg-js ships its own default
+        // font that handles the basic ASCII we need.
+        loadSystemFonts: false,
+        defaultFontFamily: "Arial",
       },
+      logLevel: "warn",
     });
     const png = resvg.render().asPng();
-    return Buffer.from(png);
+    return { png: Buffer.from(png) };
   } catch (err) {
-    console.error("[svgToPng] resvg render failed:", err);
-    return null;
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error("[svgToPng] resvg render failed:", reason);
+    console.error("[svgToPng] SVG (first 800 chars):", inlined.slice(0, 800));
+    return { png: null, reason };
   }
 }
 
@@ -102,12 +126,10 @@ export async function POST(
     );
   }
 
-  // Multi-activity flowchart upload. Client now sends SVG text under
-  // "flowchart_svg_<idx>" fields. We rasterize each SVG to PNG here
-  // using @resvg/resvg-js so the final PDF embeds a real image.
-  // (Legacy "flowchart_<idx>" PNG-blob path is still accepted for
-  // backwards compatibility but new exports use SVG.)
+  // Multi-activity flowchart upload. Client sends SVG text under
+  // "flowchart_svg_<idx>" fields; server rasterizes via resvg.
   const activityFlowcharts: Record<number, Buffer> = {};
+  const flowchartErrors: Array<{ idx: number; reason: string; svgChars: number }> = [];
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.startsWith("multipart/form-data")) {
     const form = await req.formData();
@@ -118,9 +140,21 @@ export async function POST(
         const idx = Number(svgMatch[1]);
         const svgString = typeof value === "string" ? value : "";
         if (svgString.length > 0) {
-          const png = svgToPng(svgString);
+          console.log(
+            `[export] flowchart_svg_${idx} received (${svgString.length} chars), rasterising…`,
+          );
+          const { png, reason } = svgToPng(svgString);
           if (png) {
             activityFlowcharts[idx] = png;
+            console.log(
+              `[export] flowchart_svg_${idx} → PNG ${png.length} bytes`,
+            );
+          } else {
+            flowchartErrors.push({
+              idx,
+              reason: reason ?? "unknown",
+              svgChars: svgString.length,
+            });
           }
         }
         continue;
@@ -230,5 +264,6 @@ export async function POST(
     pdfUrl: downloadUrl,
     pdfName,
     flowchartCount: Object.keys(activityFlowcharts).length,
+    flowchartErrors,
   });
 }

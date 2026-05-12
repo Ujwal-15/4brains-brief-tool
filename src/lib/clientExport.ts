@@ -97,6 +97,7 @@ export type ExportResult = {
   pdfUrl: string;
   pdfName: string;
   flowchartCount: number;
+  flowchartErrors?: Array<{ idx: number; reason: string; svgChars: number }>;
 };
 
 // Ship the multipart payload to the export route. The server expects
@@ -134,6 +135,12 @@ export async function postExport(
   }
 
   const data = (await res.json()) as ExportResult;
+  if (data.flowchartErrors && data.flowchartErrors.length > 0) {
+    console.error(
+      "[export] server-side resvg failed to rasterize some flowcharts:",
+      data.flowchartErrors,
+    );
+  }
   return { ok: true, data };
 }
 
