@@ -62,17 +62,36 @@ function normalizeSvgForRaster(svg: string): {
   width: number;
   height: number;
 } {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(svg, "image/svg+xml");
-  const root = doc.documentElement;
+  // Parse via <template> — uses the lenient HTML parser, which accepts
+  // unclosed void tags (<br>, <hr>) and other HTML-isms that Mermaid's
+  // SVG output sometimes contains. DOMParser with "image/svg+xml" is
+  // strict XML and bails with a <parsererror> on any HTML quirk.
+  //
+  // Belt-and-suspenders: also self-close common void HTML tags before
+  // parsing in case there's any other XML strictness in the chain.
+  const xmlSafe = svg
+    .replace(/<br\s*>/gi, "<br/>")
+    .replace(/<hr\s*>/gi, "<hr/>")
+    .replace(/<img([^>]*?)(?<!\/)>/gi, "<img$1/>");
+
+  const template = document.createElement("template");
+  template.innerHTML = xmlSafe;
+  const svgEl = template.content.querySelector(
+    "svg",
+  ) as SVGSVGElement | null;
+  if (!svgEl) {
+    // Parse couldn't find an <svg>. Return the input unchanged so the
+    // <img> step surfaces a real error if the source was junk.
+    return { svg: xmlSafe, width: 800, height: 600 };
+  }
 
   // 1. xmlns
-  if (!root.getAttribute("xmlns")) {
-    root.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  if (!svgEl.getAttribute("xmlns")) {
+    svgEl.setAttribute("xmlns", "http://www.w3.org/2000/svg");
   }
 
   // 2. Compute integer dimensions from viewBox
-  const viewBox = root.getAttribute("viewBox") || "";
+  const viewBox = svgEl.getAttribute("viewBox") || "";
   const vbParts = viewBox.split(/\s+/).map(Number);
   const width =
     vbParts.length >= 4 && Number.isFinite(vbParts[2])
@@ -84,19 +103,18 @@ function normalizeSvgForRaster(svg: string): {
       : 600;
 
   // 3. Explicit width/height (override any "100%")
-  root.setAttribute("width", String(width));
-  root.setAttribute("height", String(height));
+  svgEl.setAttribute("width", String(width));
+  svgEl.setAttribute("height", String(height));
 
   // 4. Strip all <style> blocks
-  doc.querySelectorAll("style").forEach((el) => el.remove());
+  svgEl.querySelectorAll("style").forEach((el) => el.remove());
 
   // 5. Inline default colours so the rasterized canvas is readable.
-  //    The selectors below cover Mermaid's standard class structure.
 
   // Node shapes (rectangles, diamonds, etc.) — white fill, dark border
   const NODE_SHAPE_SEL =
     ".node rect, .node polygon, .node circle, .node ellipse, .nodes rect, .nodes polygon, .nodes circle, .nodes ellipse, .basic.label-container, .label-container";
-  doc.querySelectorAll(NODE_SHAPE_SEL).forEach((el) => {
+  svgEl.querySelectorAll(NODE_SHAPE_SEL).forEach((el) => {
     if (!el.getAttribute("fill") || el.getAttribute("fill") === "none") {
       el.setAttribute("fill", "#ffffff");
     }
@@ -107,12 +125,14 @@ function normalizeSvgForRaster(svg: string): {
   });
 
   // Edge label backgrounds — white so labels are readable
-  doc.querySelectorAll(".edgeLabel rect, .label rect").forEach((el) => {
-    if (!el.getAttribute("fill")) el.setAttribute("fill", "#ffffff");
-  });
+  svgEl
+    .querySelectorAll(".edgeLabel rect, .label rect")
+    .forEach((el) => {
+      if (!el.getAttribute("fill")) el.setAttribute("fill", "#ffffff");
+    });
 
-  // All text — dark fill, sans-serif (avoid the missing-font issue)
-  doc.querySelectorAll("text, tspan").forEach((el) => {
+  // All text — dark fill, sans-serif (avoid missing-font issues)
+  svgEl.querySelectorAll("text, tspan").forEach((el) => {
     if (!el.getAttribute("fill")) el.setAttribute("fill", "#111111");
     if (el.tagName.toLowerCase() === "text") {
       if (!el.getAttribute("font-family")) {
@@ -122,7 +142,7 @@ function normalizeSvgForRaster(svg: string): {
   });
 
   // Edge paths (the lines connecting nodes) — dark stroke, no fill
-  doc
+  svgEl
     .querySelectorAll(".edgePath path, .edgePaths path, path.path")
     .forEach((el) => {
       if (!el.getAttribute("stroke")) el.setAttribute("stroke", "#333333");
@@ -132,15 +152,16 @@ function normalizeSvgForRaster(svg: string): {
       if (!el.getAttribute("fill")) el.setAttribute("fill", "none");
     });
 
-  // Arrowhead markers — DARK fill (these are inside <marker> elements,
-  // typically <path> or <polygon>)
-  doc.querySelectorAll("marker path, marker polygon").forEach((el) => {
+  // Arrowhead markers — DARK fill so arrows are visible
+  svgEl.querySelectorAll("marker path, marker polygon").forEach((el) => {
     el.setAttribute("fill", "#333333");
     el.setAttribute("stroke", "#333333");
   });
 
-  const serializer = new XMLSerializer();
-  return { svg: serializer.serializeToString(doc), width, height };
+  // Serialize back. outerHTML uses the HTML serializer which is the
+  // counterpart to the HTML parser we used above — round-trips cleanly
+  // and produces something <img> reliably loads.
+  return { svg: svgEl.outerHTML, width, height };
 }
 
 // Encode an SVG to a base64 data URL. Base64 is more reliable than
