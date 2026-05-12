@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { renderToBuffer } from "@react-pdf/renderer";
 import { Resvg } from "@resvg/resvg-js";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -8,12 +10,51 @@ import { renderSectionsForExport } from "@/lib/exportSections";
 import { BriefPdfDocument } from "@/lib/exportPdf";
 import { uploadPdf } from "@/lib/storage";
 
+// Bundled font for resvg. Inter ships via @fontsource/inter and is
+// force-included in the lambda bundle by next.config.mjs. resvg-js takes
+// font *paths* (not buffers), so we just compute them once and pass to
+// every render call.
+async function getFontFilePaths(): Promise<string[]> {
+  const root = process.cwd();
+  const paths = [
+    path.join(
+      root,
+      "node_modules",
+      "@fontsource",
+      "inter",
+      "files",
+      "inter-latin-400-normal.woff2",
+    ),
+    path.join(
+      root,
+      "node_modules",
+      "@fontsource",
+      "inter",
+      "files",
+      "inter-latin-700-normal.woff2",
+    ),
+  ];
+  // Verify each exists; resvg throws on missing files.
+  const usable: string[] = [];
+  for (const p of paths) {
+    try {
+      await fs.access(p);
+      usable.push(p);
+    } catch (err) {
+      console.warn(`[font] not found: ${p}`, err);
+    }
+  }
+  return usable;
+}
+
 // Render an SVG string to a PNG buffer using @resvg/resvg-js.
 //
 // Pre-processes the Mermaid SVG to remove features resvg can't handle
 // (<style>, <foreignObject>), then inlines basic fill/stroke attributes
 // so default colours look right.
-function svgToPng(svg: string): { png: Buffer | null; reason?: string } {
+async function svgToPng(
+  svg: string,
+): Promise<{ png: Buffer | null; reason?: string }> {
   // 1. Strip features resvg chokes on
   const cleaned = svg
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
@@ -65,21 +106,26 @@ function svgToPng(svg: string): { png: Buffer | null; reason?: string } {
     )
     .replace(
       /<text\b(?![^>]*\bfill=)/gi,
-      '<text fill="#111111" font-family="DejaVu Sans, sans-serif" font-size="14"',
+      '<text fill="#111111" font-family="Inter, sans-serif" font-size="14"',
     )
     .replace(/<tspan\b(?![^>]*\bfill=)/gi, '<tspan fill="#111111"');
 
-  // 4. Render. loadSystemFonts MUST be true on Vercel — resvg ships
-  //    NO bundled font, so without system fonts text won't render at
-  //    all (which is what we saw in the previous attempt). Linux on
-  //    Vercel reliably has DejaVu Sans.
+  // 4. Render with the bundled Inter font files. Eliminates all
+  //    dependency on the runtime's system fonts (which were nondeterministic
+  //    across Vercel cold starts and local dev). The font is shipped via
+  //    @fontsource/inter and force-included in the lambda bundle by
+  //    next.config.mjs's outputFileTracingIncludes.
   try {
+    const fontFiles = await getFontFilePaths();
     const resvg = new Resvg(inlined, {
       fitTo: { mode: "width", value: 1400 },
       background: "rgba(255,255,255,1)",
       font: {
-        loadSystemFonts: true,
-        defaultFontFamily: "DejaVu Sans",
+        fontFiles: fontFiles.length > 0 ? fontFiles : undefined,
+        // Belt-and-suspenders: also try system fonts if the bundled files
+        // somehow weren't included in the deployment.
+        loadSystemFonts: fontFiles.length === 0,
+        defaultFontFamily: "Inter",
       },
       logLevel: "warn",
     });
@@ -179,7 +225,7 @@ export async function POST(
           console.log(
             `[export] flowchart_svg_${idx} received (${svgString.length} chars), rasterising…`,
           );
-          const { png, reason } = svgToPng(svgString);
+          const { png, reason } = await svgToPng(svgString);
           if (png) {
             activityFlowcharts[idx] = png;
             console.log(
