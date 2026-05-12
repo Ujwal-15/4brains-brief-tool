@@ -49,16 +49,19 @@ async function renderMermaidSvg(source: string): Promise<string> {
 
 // Normalises a Mermaid-output SVG so canvas rasterization actually works.
 //
-// Two browser quirks bite here:
-//   1. Mermaid emits `width="100%"` on the root <svg>. When that string
-//      is fed to an Image element, `naturalWidth`/`naturalHeight` end up
-//      0, and ctx.drawImage(img, 0, 0, w, h) draws *nothing* — empty PNG.
-//   2. SVGs without an explicit `xmlns` attribute fail to decode at all
-//      in some browsers when wrapped in a data URL.
-//
-// We strip the % dimensions, pull width/height from `viewBox`, and inject
-// explicit numeric attributes so the resulting <img> has concrete pixel
-// dimensions to draw from.
+// Failure modes we defend against (all observed in the wild):
+//   1. Mermaid emits `width="100%"`. <img> reports naturalWidth=0 and
+//      drawImage draws nothing.
+//   2. SVGs without an explicit xmlns fail to decode in some browsers.
+//   3. Mermaid often inlines a `<style>` block referencing fonts or
+//      CSS-variable colors. Some browsers (Chrome/Brave on macOS in
+//      certain versions) refuse to load such SVGs into an <img> at all,
+//      throwing the generic "[object Event]" onerror. We strip the
+//      <style> block — visual cost is colour theming (already gone via
+//      sanitizeMermaidForRender); structure stays intact.
+//   4. Mermaid's auto-computed dimensions come back as floats
+//      (e.g. 572.265625). Some browsers stumble on fractional <svg>
+//      width/height. We round.
 function normalizeSvgForRaster(svg: string): {
   svg: string;
   width: number;
@@ -71,15 +74,15 @@ function normalizeSvgForRaster(svg: string): {
     s = s.replace(/<svg(\s)/i, '<svg xmlns="http://www.w3.org/2000/svg"$1');
   }
 
-  // 2. Read intended dimensions from viewBox
+  // 2. Read intended dimensions from viewBox, round to ints
   let width = 800;
   let height = 600;
   const vb = s.match(/viewBox="([\d.\s-]+)"/i);
   if (vb) {
     const parts = vb[1].split(/\s+/).map(Number);
     if (parts.length >= 4) {
-      width = Math.max(parts[2] || 800, 100);
-      height = Math.max(parts[3] || 600, 100);
+      width = Math.max(Math.round(parts[2] || 800), 100);
+      height = Math.max(Math.round(parts[3] || 600), 100);
     }
   }
 
@@ -93,58 +96,77 @@ function normalizeSvgForRaster(svg: string): {
     `<svg width="${width}" height="${height}"$1`,
   );
 
+  // 5. Strip inline <style> blocks — these are the most common cause of
+  //    the <img> refusing to load a Mermaid SVG. Sanitize already stripped
+  //    classDef so we don't need the styles anyway; default browser
+  //    rendering of plain rects + text is fine.
+  s = s.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+
   return { svg: s, width, height };
 }
 
 async function svgToPngBlob(svg: string, scale = 2): Promise<Blob> {
   const { svg: normalized, width, height } = normalizeSvgForRaster(svg);
 
-  // Data URL is more reliable than blob URL across browsers for SVG-in-img.
-  const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(normalized)}`;
-
-  const img = new Image();
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = (e) => {
-      reject(
-        new Error(
-          `SVG image failed to load (${width}x${height}): ${String(e)}`,
-        ),
-      );
-    };
-    img.src = dataUrl;
+  // Blob URL is more permissive than data URL for SVGs with computed
+  // styles or unusual encoded characters. createObjectURL gives the
+  // browser a real Blob with a proper MIME type instead of a data
+  // string that some browsers' SVG parsers refuse.
+  const blob = new Blob([normalized], {
+    type: "image/svg+xml;charset=utf-8",
   });
+  const url = URL.createObjectURL(blob);
 
-  // Force decode to complete before we drawImage. Some browsers fire
-  // onload before the SVG content is fully painted; decode() awaits that.
-  if (typeof img.decode === "function") {
-    try {
-      await img.decode();
-    } catch {
-      // some old browsers reject decode but img is still drawable
-    }
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(width * scale);
-  canvas.height = Math.round(height * scale);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2D context unavailable");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob && blob.size > 0) resolve(blob);
-      else
-        reject(
-          new Error(
-            `Canvas toBlob produced empty PNG (${canvas.width}x${canvas.height})`,
-          ),
+  try {
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => {
+        // Surface the normalized SVG so we can see exactly what the
+        // browser refused to load.
+        // eslint-disable-next-line no-console
+        console.error(
+          `[svgToPng] <img> failed to load SVG (${width}x${height}). Normalized SVG (first 1000 chars):\n` +
+            normalized.slice(0, 1000),
         );
-    }, "image/png");
-  });
+        reject(
+          new Error(`SVG image failed to load (${width}x${height})`),
+        );
+      };
+      img.src = url;
+    });
+
+    if (typeof img.decode === "function") {
+      try {
+        await img.decode();
+      } catch {
+        // some old browsers reject decode but img is still drawable
+      }
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D context unavailable");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((b) => {
+        if (b && b.size > 0) resolve(b);
+        else
+          reject(
+            new Error(
+              `Canvas toBlob produced empty PNG (${canvas.width}x${canvas.height})`,
+            ),
+          );
+      }, "image/png");
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export async function buildFlowchartPng(
