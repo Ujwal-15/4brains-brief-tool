@@ -5,30 +5,24 @@
 
 import { generateFlowchart } from "./flowchart";
 
-// Strip Mermaid features that interact badly with our SVG-to-canvas
-// rasterization step. Specifically:
-//   - `classDef foo fill:#xxx,...`  declarations
+// Strip Mermaid features that break our SVG-to-canvas rasterization:
+//   - `classDef foo fill:#xxx,...`  declarations (CSS rules in <style>)
 //   - `:::foo`                      class-assignment suffix on nodes
-//   - `\n` inside quoted labels     forces line breaks via <tspan>,
-//                                   which positions inconsistently in
-//                                   the rasterized canvas
-// All three render fine in Mermaid's own preview but break our
-// browser-side <img>→canvas→PNG path in ways that vary by browser. The
-// seeded briefs use plain single-line nodes and rasterize reliably; this
-// function converts everything to that shape.
-// Visual loss is colour theming + multi-line labels — structure is identical.
+//
+// These add CSS-based styling to the SVG which our <img> + canvas path
+// can't honour (we strip <style> blocks during normalize). Stripping them
+// here gives Mermaid plain rect/diamond/text/edge output that we re-style
+// with inline fill attributes during normalizeSvgForRaster.
+//
+// We INTENTIONALLY keep `\n` line breaks inside labels — Mermaid handles
+// them natively and sizes node heights to fit multi-line text. Removing
+// them produced single-line text that Mermaid then word-wrapped visually
+// without growing the box, causing the wrapped second line to clip.
 export function sanitizeMermaidForRender(src: string): string {
   return src
     .split("\n")
     .filter((line) => !line.trim().startsWith("classDef"))
-    .map((line) =>
-      line
-        .replace(/:::[A-Za-z_][A-Za-z0-9_-]*/g, "")
-        // Match a literal "\n" (backslash + n) inside the source string —
-        // Mermaid treats this as a label line break. Replace with a
-        // separator so the label stays on one line.
-        .replace(/\\n/g, " — "),
-    )
+    .map((line) => line.replace(/:::[A-Za-z_][A-Za-z0-9_-]*/g, ""))
     .join("\n");
 }
 
