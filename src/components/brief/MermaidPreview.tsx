@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { sanitizeMermaidForRender } from "@/lib/clientExport";
 
 let initialized = false;
@@ -22,9 +22,78 @@ async function getMermaid() {
   return cachedMermaid;
 }
 
-export function MermaidPreview({ source }: { source: string }) {
+// Convert an in-DOM SVG element to a PNG data URL. Runs entirely in the
+// browser where Mermaid's fonts already paint correctly (unlike the
+// server-side resvg pipeline). Uses a base64-encoded data URL — same-origin
+// so the canvas does NOT get tainted.
+async function svgElementToPngDataUrl(
+  svg: SVGSVGElement,
+  scale = 2,
+): Promise<string> {
+  // 1. Make sure the SVG has explicit width/height attributes so the
+  //    <img> loader knows how big to render it.
+  const bbox = svg.getBoundingClientRect();
+  const w = Math.max(1, Math.ceil(bbox.width));
+  const h = Math.max(1, Math.ceil(bbox.height));
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("width", String(w));
+  clone.setAttribute("height", String(h));
+  // White background so PNGs don't have a transparent (and in dark viewers,
+  // invisible) backdrop.
+  const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  bg.setAttribute("x", "0");
+  bg.setAttribute("y", "0");
+  bg.setAttribute("width", String(w));
+  bg.setAttribute("height", String(h));
+  bg.setAttribute("fill", "#ffffff");
+  clone.insertBefore(bg, clone.firstChild);
+
+  const xml = new XMLSerializer().serializeToString(clone);
+  // Base64-encode → data URL. Use unescape/encodeURIComponent trick to handle
+  // any unicode characters Mermaid emits.
+  const b64 = btoa(unescape(encodeURIComponent(xml)));
+  const dataUrl = `data:image/svg+xml;base64,${b64}`;
+
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = (e) => reject(new Error(`img load failed: ${String(e)}`));
+    img.src = dataUrl;
+  });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w * scale;
+  canvas.height = h * scale;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("canvas 2d context unavailable");
+  ctx.scale(scale, scale);
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/png");
+}
+
+function downloadDataUrl(dataUrl: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+export function MermaidPreview({
+  source,
+  downloadName = "flowchart",
+}: {
+  source: string;
+  /** Filename stem for the Download button (no extension). */
+  downloadName?: string;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+  const [busy, setBusy] = useState(false);
   const renderId = useRef(`m${Math.random().toString(36).slice(2, 8)}`);
 
   useEffect(() => {
@@ -33,27 +102,27 @@ export function MermaidPreview({ source }: { source: string }) {
     if (!source.trim()) {
       if (ref.current) ref.current.innerHTML = "";
       setError(null);
+      setReady(false);
       return;
     }
 
     (async () => {
       try {
         const mermaid = await getMermaid();
-        // mermaid.render needs a unique id each call to avoid duplicate-id collisions
         const id = `${renderId.current}-${Date.now()}`;
-        // Sanitize the same way the export pipeline does so the live
-        // preview matches the PDF output exactly.
         const sanitized = sanitizeMermaidForRender(source);
         const { svg } = await mermaid.render(id, sanitized);
         if (!cancelled && ref.current) {
           ref.current.innerHTML = svg;
           setError(null);
+          setReady(true);
         }
       } catch (e) {
         if (!cancelled) {
           setError(
             e instanceof Error ? e.message : "Failed to render flowchart",
           );
+          setReady(false);
         }
       }
     })();
@@ -62,6 +131,30 @@ export function MermaidPreview({ source }: { source: string }) {
       cancelled = true;
     };
   }, [source]);
+
+  const handleDownloadPng = useCallback(async () => {
+    if (!ref.current) return;
+    const svg = ref.current.querySelector("svg");
+    if (!svg) return;
+    setBusy(true);
+    try {
+      const dataUrl = await svgElementToPngDataUrl(svg as SVGSVGElement, 2);
+      downloadDataUrl(dataUrl, `${downloadName}.png`);
+    } catch (e) {
+      // PNG path failed (rare — e.g. SVG references external font that taints
+      // the canvas). Fall back to the raw SVG, which is just as useful: opens
+      // in any browser, drops into Slides / Docs, converts via any online tool.
+      console.warn("[flowchart] PNG export failed, falling back to SVG:", e);
+      const xml = new XMLSerializer().serializeToString(svg);
+      const blob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      downloadDataUrl(url, `${downloadName}.svg`);
+      // Clean the object URL after the click has been processed.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } finally {
+      setBusy(false);
+    }
+  }, [downloadName]);
 
   if (!source.trim()) {
     return (
@@ -76,7 +169,21 @@ export function MermaidPreview({ source }: { source: string }) {
       {error ? (
         <p className="text-xs text-red-600">Flowchart error: {error}</p>
       ) : (
-        <div ref={ref} className="flex justify-center [&_svg]:max-w-full" />
+        <>
+          <div ref={ref} className="flex justify-center [&_svg]:max-w-full" />
+          {ready && (
+            <div className="mt-3 flex justify-end">
+              <button
+                type="button"
+                onClick={handleDownloadPng}
+                disabled={busy}
+                className="rounded-full border border-ink-on-page/15 bg-white px-3 py-1.5 text-[12px] font-medium text-ink-on-page/80 transition-colors hover:bg-ink-on-page/5 hover:text-ink-on-page disabled:opacity-60"
+              >
+                {busy ? "Preparing…" : "⤓ Download flowchart (PNG)"}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

@@ -335,7 +335,10 @@ export function BriefDetail(p: Props) {
                                     />
                                   </div>
                                   <div className="overflow-hidden rounded-card bg-white p-5 shadow-hairline">
-                                    <MermaidPreview source={act.aiFlowchart} />
+                                    <MermaidPreview
+                                      source={act.aiFlowchart}
+                                      downloadName={`flowchart_${p.projectName.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "brief"}_${section.index}.${act.index}`}
+                                    />
                                   </div>
                                 </div>
                               )}
