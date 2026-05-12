@@ -90,11 +90,8 @@ export function PostExportModal({
               ) : (
                 <>
                   PDF generated for {totalActivities} activit
-                  {totalActivities === 1 ? "y" : "ies"}.{" "}
-                  <span className="text-champagne">
-                    Flowcharts didn’t render — open the browser console for the
-                    reason.
-                  </span>
+                  {totalActivities === 1 ? "y" : "ies"}. Flowcharts are
+                  available in the brief’s live preview inside the app.
                 </>
               )}
             </p>

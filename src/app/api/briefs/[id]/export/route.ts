@@ -196,44 +196,48 @@ export async function POST(
     );
   }
 
-  // Multi-activity flowchart upload. Client sends SVG text under
-  // "flowchart_svg_<idx>" fields; server rasterizes via resvg.
+  // Flowchart embedding in the PDF is OFF by default for the pilot.
+  // The Mermaid→SVG→server-rasterize→PNG→embed pipeline has too many
+  // edge cases to ship reliably right now. Users still see the flowchart
+  // live in the app's Edit form preview; PDF carries the rest.
+  //
+  // To re-enable later (once resvg rendering is solid), set
+  // FLOWCHARTS_IN_PDF=true in the Vercel env.
+  const FLOWCHARTS_IN_PDF = process.env.FLOWCHARTS_IN_PDF === "true";
   const activityFlowcharts: Record<number, Buffer> = {};
   const flowchartErrors: Array<{ idx: number; reason: string; svgChars: number }> = [];
-  const contentType = req.headers.get("content-type") ?? "";
-  if (contentType.startsWith("multipart/form-data")) {
-    const form = await req.formData();
-    const entries = Array.from(form.entries());
-    for (const [key, value] of entries) {
-      const svgMatch = key.match(/^flowchart_svg_(\d+)$/);
-      if (svgMatch) {
-        const idx = Number(svgMatch[1]);
-        const svgString = typeof value === "string" ? value : "";
-        if (svgString.length > 0) {
-          console.log(
-            `[export] flowchart_svg_${idx} received (${svgString.length} chars), rasterising…`,
-          );
-          const { png, reason } = await svgToPng(svgString);
-          if (png) {
-            activityFlowcharts[idx] = png;
-            console.log(
-              `[export] flowchart_svg_${idx} → PNG ${png.length} bytes`,
-            );
-          } else {
-            flowchartErrors.push({
-              idx,
-              reason: reason ?? "unknown",
-              svgChars: svgString.length,
-            });
+
+  if (FLOWCHARTS_IN_PDF) {
+    const contentType = req.headers.get("content-type") ?? "";
+    if (contentType.startsWith("multipart/form-data")) {
+      const form = await req.formData();
+      const entries = Array.from(form.entries());
+      for (const [key, value] of entries) {
+        const svgMatch = key.match(/^flowchart_svg_(\d+)$/);
+        if (svgMatch) {
+          const idx = Number(svgMatch[1]);
+          const svgString = typeof value === "string" ? value : "";
+          if (svgString.length > 0) {
+            const { png, reason } = await svgToPng(svgString);
+            if (png) {
+              activityFlowcharts[idx] = png;
+            } else {
+              flowchartErrors.push({
+                idx,
+                reason: reason ?? "unknown",
+                svgChars: svgString.length,
+              });
+            }
           }
+          continue;
         }
-        continue;
       }
-      const pngMatch = key.match(/^flowchart_(\d+)$/);
-      if (pngMatch && value instanceof Blob && value.size > 0) {
-        const idx = Number(pngMatch[1]);
-        activityFlowcharts[idx] = Buffer.from(await value.arrayBuffer());
-      }
+    }
+  } else {
+    // Still consume the body so the request completes cleanly.
+    const contentType = req.headers.get("content-type") ?? "";
+    if (contentType.startsWith("multipart/form-data")) {
+      await req.formData();
     }
   }
 
