@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { sanitizeMermaidForRender } from "@/lib/clientExport";
 
 let initialized = false;
 let cachedMermaid: typeof import("mermaid").default | null = null;
@@ -40,7 +41,10 @@ export function MermaidPreview({ source }: { source: string }) {
         const mermaid = await getMermaid();
         // mermaid.render needs a unique id each call to avoid duplicate-id collisions
         const id = `${renderId.current}-${Date.now()}`;
-        const { svg } = await mermaid.render(id, source);
+        // Sanitize the same way the export pipeline does so the live
+        // preview matches the PDF output exactly.
+        const sanitized = sanitizeMermaidForRender(source);
+        const { svg } = await mermaid.render(id, sanitized);
         if (!cancelled && ref.current) {
           ref.current.innerHTML = svg;
           setError(null);

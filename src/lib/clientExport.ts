@@ -5,6 +5,24 @@
 
 import { generateFlowchart } from "./flowchart";
 
+// Strip Mermaid features that interact badly with our SVG-to-canvas
+// rasterization step. Specifically:
+//   - `classDef foo fill:#xxx,...`  declarations
+//   - `:::foo`                      class-assignment suffix on nodes
+// These render cleanly in Mermaid's own inline preview but produce SVGs
+// with computed styles (background-rects + child shapes) that the
+// `<img>` element rasterizes inconsistently across browsers — some draw
+// black boxes, some skip the fills entirely. Stripping them gives us
+// plain rectangles + diamonds + arrows that always rasterize the same.
+// Visual loss is purely color theming; the structure is identical.
+export function sanitizeMermaidForRender(src: string): string {
+  return src
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("classDef"))
+    .map((line) => line.replace(/:::[A-Za-z_][A-Za-z0-9_-]*/g, ""))
+    .join("\n");
+}
+
 async function renderMermaidSvg(source: string): Promise<string> {
   const mermaid = (await import("mermaid")).default;
   // Initialize is idempotent within a single page.
@@ -14,8 +32,9 @@ async function renderMermaidSvg(source: string): Promise<string> {
     securityLevel: "strict",
     flowchart: { htmlLabels: false, curve: "basis" },
   });
+  const sanitized = sanitizeMermaidForRender(source);
   const id = `m_export_${Date.now()}`;
-  const { svg } = await mermaid.render(id, source);
+  const { svg } = await mermaid.render(id, sanitized);
   return svg;
 }
 

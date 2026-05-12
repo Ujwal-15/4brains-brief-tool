@@ -23,7 +23,7 @@ const supa = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-const STARTER_PASSWORD = "4brains2026";
+const STARTER_PASSWORD = "Admin@2026";
 
 const TEAM: Array<{ email: string; name: string }> = [
   { email: "sanjeev@4brains.in",        name: "Sanjeev Sinha" },
@@ -41,6 +41,7 @@ const TEAM: Array<{ email: string; name: string }> = [
   { email: "shashank@4brains.in",       name: "Shashank A S" },
   { email: "nidhisha.k@4brains.in",     name: "Nidhisha K" },
   { email: "aditi.priya@4brains.in",    name: "Aditi Priya" },
+  { email: "nikhil.kumar@4brains.in",   name: "Nikhil Kumar" },
 ];
 
 // Find an existing user by email. We page through admin.listUsers since
