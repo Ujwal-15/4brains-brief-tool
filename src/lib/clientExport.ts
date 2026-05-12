@@ -47,62 +47,106 @@ async function renderMermaidSvg(source: string): Promise<string> {
   return svg;
 }
 
-// Normalises a Mermaid-output SVG so canvas rasterization actually works.
+// Normalises a Mermaid-output SVG so canvas rasterization actually works
+// AND the rendered output is readable (white nodes, dark text, dark arrows).
 //
 // Failure modes we defend against (all observed in the wild):
 //   1. Mermaid emits `width="100%"`. <img> reports naturalWidth=0 and
-//      drawImage draws nothing.
+//      drawImage draws nothing → empty PNG.
 //   2. SVGs without an explicit xmlns fail to decode in some browsers.
-//   3. Mermaid often inlines a `<style>` block referencing fonts or
-//      CSS-variable colors. Some browsers (Chrome/Brave on macOS in
-//      certain versions) refuse to load such SVGs into an <img> at all,
-//      throwing the generic "[object Event]" onerror. We strip the
-//      <style> block — visual cost is colour theming (already gone via
-//      sanitizeMermaidForRender); structure stays intact.
-//   4. Mermaid's auto-computed dimensions come back as floats
-//      (e.g. 572.265625). Some browsers stumble on fractional <svg>
-//      width/height. We round.
+//   3. Mermaid inlines a `<style>` block. Some browsers refuse to load
+//      <img src=...> SVGs that have <style> with font-family refs, throwing
+//      [object Event] from onerror. We strip the block.
+//   4. After stripping styles, default browser rendering paints rects and
+//      text in BLACK (the SVG default fill), so the user sees black-on-black
+//      boxes. We push fill/stroke/color attributes inline onto each shape
+//      and text element so the colour comes from attributes, not CSS.
+//   5. Mermaid's auto-computed dimensions are floats (572.265625). Some
+//      browsers stumble on fractional <svg> width/height. We round.
 function normalizeSvgForRaster(svg: string): {
   svg: string;
   width: number;
   height: number;
 } {
-  let s = svg;
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svg, "image/svg+xml");
+  const root = doc.documentElement;
 
-  // 1. Ensure xmlns
-  if (!s.includes('xmlns="http://www.w3.org/2000/svg"')) {
-    s = s.replace(/<svg(\s)/i, '<svg xmlns="http://www.w3.org/2000/svg"$1');
+  // 1. xmlns
+  if (!root.getAttribute("xmlns")) {
+    root.setAttribute("xmlns", "http://www.w3.org/2000/svg");
   }
 
-  // 2. Read intended dimensions from viewBox, round to ints
-  let width = 800;
-  let height = 600;
-  const vb = s.match(/viewBox="([\d.\s-]+)"/i);
-  if (vb) {
-    const parts = vb[1].split(/\s+/).map(Number);
-    if (parts.length >= 4) {
-      width = Math.max(Math.round(parts[2] || 800), 100);
-      height = Math.max(Math.round(parts[3] || 600), 100);
+  // 2. Compute integer dimensions from viewBox
+  const viewBox = root.getAttribute("viewBox") || "";
+  const vbParts = viewBox.split(/\s+/).map(Number);
+  const width =
+    vbParts.length >= 4 && Number.isFinite(vbParts[2])
+      ? Math.max(Math.round(vbParts[2]), 100)
+      : 800;
+  const height =
+    vbParts.length >= 4 && Number.isFinite(vbParts[3])
+      ? Math.max(Math.round(vbParts[3]), 100)
+      : 600;
+
+  // 3. Explicit width/height (override any "100%")
+  root.setAttribute("width", String(width));
+  root.setAttribute("height", String(height));
+
+  // 4. Strip all <style> blocks
+  doc.querySelectorAll("style").forEach((el) => el.remove());
+
+  // 5. Inline default colours so the rasterized canvas is readable.
+  //    The selectors below cover Mermaid's standard class structure.
+
+  // Node shapes (rectangles, diamonds, etc.) — white fill, dark border
+  const NODE_SHAPE_SEL =
+    ".node rect, .node polygon, .node circle, .node ellipse, .nodes rect, .nodes polygon, .nodes circle, .nodes ellipse, .basic.label-container, .label-container";
+  doc.querySelectorAll(NODE_SHAPE_SEL).forEach((el) => {
+    if (!el.getAttribute("fill") || el.getAttribute("fill") === "none") {
+      el.setAttribute("fill", "#ffffff");
     }
-  }
+    if (!el.getAttribute("stroke")) el.setAttribute("stroke", "#333333");
+    if (!el.getAttribute("stroke-width")) {
+      el.setAttribute("stroke-width", "1.2");
+    }
+  });
 
-  // 3. Strip existing width/height (often "100%" from mermaid)
-  s = s.replace(/(<svg[^>]*?)\swidth="[^"]*"/i, "$1");
-  s = s.replace(/(<svg[^>]*?)\sheight="[^"]*"/i, "$1");
+  // Edge label backgrounds — white so labels are readable
+  doc.querySelectorAll(".edgeLabel rect, .label rect").forEach((el) => {
+    if (!el.getAttribute("fill")) el.setAttribute("fill", "#ffffff");
+  });
 
-  // 4. Inject explicit numeric width/height
-  s = s.replace(
-    /<svg(\s)/i,
-    `<svg width="${width}" height="${height}"$1`,
-  );
+  // All text — dark fill, sans-serif (avoid the missing-font issue)
+  doc.querySelectorAll("text, tspan").forEach((el) => {
+    if (!el.getAttribute("fill")) el.setAttribute("fill", "#111111");
+    if (el.tagName.toLowerCase() === "text") {
+      if (!el.getAttribute("font-family")) {
+        el.setAttribute("font-family", "Arial, Helvetica, sans-serif");
+      }
+    }
+  });
 
-  // 5. Strip inline <style> blocks — these are the most common cause of
-  //    the <img> refusing to load a Mermaid SVG. Sanitize already stripped
-  //    classDef so we don't need the styles anyway; default browser
-  //    rendering of plain rects + text is fine.
-  s = s.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+  // Edge paths (the lines connecting nodes) — dark stroke, no fill
+  doc
+    .querySelectorAll(".edgePath path, .edgePaths path, path.path")
+    .forEach((el) => {
+      if (!el.getAttribute("stroke")) el.setAttribute("stroke", "#333333");
+      if (!el.getAttribute("stroke-width")) {
+        el.setAttribute("stroke-width", "1.5");
+      }
+      if (!el.getAttribute("fill")) el.setAttribute("fill", "none");
+    });
 
-  return { svg: s, width, height };
+  // Arrowhead markers — DARK fill (these are inside <marker> elements,
+  // typically <path> or <polygon>)
+  doc.querySelectorAll("marker path, marker polygon").forEach((el) => {
+    el.setAttribute("fill", "#333333");
+    el.setAttribute("stroke", "#333333");
+  });
+
+  const serializer = new XMLSerializer();
+  return { svg: serializer.serializeToString(doc), width, height };
 }
 
 // Encode an SVG to a base64 data URL. Base64 is more reliable than
